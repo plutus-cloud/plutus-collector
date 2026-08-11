@@ -1,0 +1,245 @@
+name: Nightly Security Scan
+
+# The recurring half of this repo's scanning — same split as plutus-cloud/plutus's
+# nightly-tests.yml `security-scan` job, extracted into its own file here since this repo has
+# no other nightly suite to ride alongside.
+#
+# Answers two questions security.yml's PR-time scan cannot:
+#
+# `trivy image` vs. Dependabot's `docker` ecosystem (dependabot.yml). Dependabot watches the
+# *tag written in the Dockerfile* and opens a PR when a newer tag exists — it says nothing
+# about CVEs that accumulate inside a base image tag that never moves. Scanning the *published*
+# image (ghcr.io/plutus-cloud/plutus-collector:main) rather than building fresh here matters for
+# the same reason it does in the main repo: a fresh build would pull today's base layer and
+# report a result the actually-shipped image doesn't have.
+#
+# `osv-scanner` vs. Dependabot's Go module alerts. Same idea, different delivery — a scheduled
+# red check someone has to dismiss on purpose, rather than an alert in a tab nobody has open.
+#
+# `trivy config` deliberately does NOT run here — it's on the PR path in security.yml, where
+# the file under review is the thing being linted.
+on:
+  schedule:
+    - cron: '0 4 * * *' # 04:00 UTC daily, staggered an hour after the main repo's 03:00 slot
+    # Weekly full-severity audit — the manual full_security_audit input below existed with no
+    # scheduled trigger, so nobody was ever prompted to run it. This cron is distinguished from
+    # the daily one at the step level via github.event.schedule (see FULL_AUDIT below), rather
+    # than becoming a second workflow, so both runs still share one set of jobs/steps.
+    - cron: '0 4 * * 1' # 04:00 UTC every Monday — full severity, including unfixed CVEs
+  workflow_dispatch:
+    inputs:
+      full_security_audit:
+        description: 'Report every severity, including CVEs with no fix available'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: read # pull this repo's own GHCR image — see the note on the login step below
+
+jobs:
+  security-scan:
+    name: Security (gitleaks + trivy image + osv-scanner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Load scanner version pins
+        run: grep -E '^[A-Z][A-Z0-9_]*=' .github/scanner-versions.env >> "$GITHUB_ENV"
+
+      # Checksum-verified, same reasoning as the main repo's copy: this job pulls a GHCR image,
+      # which is exactly the condition under which an unverified scanner binary stops being a
+      # low-stakes risk.
+      - name: Install scanners
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+
+          curl -sSfL -O "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sSfL -O "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
+          sha256sum --check --ignore-missing "trivy_${TRIVY_VERSION}_checksums.txt"
+          tar -xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
+
+          curl -sSfL -O "https://github.com/google/osv-scanner/releases/download/${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          curl -sSfL -O "https://github.com/google/osv-scanner/releases/download/${OSV_SCANNER_VERSION}/osv-scanner_SHA256SUMS"
+          sha256sum --check --ignore-missing osv-scanner_SHA256SUMS
+          mv osv-scanner_linux_amd64 osv-scanner
+
+          curl -sSfL -O "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -O "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          sha256sum --check --ignore-missing "gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
+
+          chmod +x trivy osv-scanner gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      # Full history, unlike security.yml's base..head range — a once-a-day job nothing is
+      # gated on doesn't have the "retrains people to ignore a blocking check" problem a PR
+      # re-reporting the same historical finding would. continue-on-error + the exit code below
+      # rather than security.yml's block-immediately shape, so a secret finding doesn't hide
+      # tonight's image/lockfile state in the same run.
+      - name: Scan git history for secrets (gitleaks)
+        id: gitleaks
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          mkdir -p security-reports
+          rc=0
+          gitleaks git . \
+            --no-banner \
+            --redact \
+            --report-format json \
+            --report-path security-reports/gitleaks.json || rc=$?
+
+          case "$rc" in
+            0) echo "No secrets found in git history." ;;
+            1) echo "::error title=gitleaks::Secrets found in main's history — see the security-reports artifact. Rotate first, then remove." ;;
+            *) echo "::error title=gitleaks::gitleaks exited $rc without completing a scan. A scan that did not happen is not a clean result." ;;
+          esac
+          exit "$rc"
+
+      # Same freshness signal as the main repo's copy — warns only, never fails. None of these
+      # pins is Dependabot-watched (curl'd release assets, not `uses:` refs).
+      - name: Check scanner pins against upstream releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          check() {
+            name="$1"; repo="$2"; pinned="${3#v}"
+            latest="$(gh api "repos/$repo/releases/latest" --jq .tag_name 2>/dev/null || true)"
+            latest="${latest#v}"
+            if [ -z "$latest" ]; then
+              echo "$name: could not resolve $repo's latest release (rate limit, outage, or no 'latest' release) — pin not checked."
+            elif [ "$latest" != "$pinned" ]; then
+              echo "::warning title=Scanner pin behind::$name is pinned at $pinned; $repo's latest release is $latest. Bump it in .github/scanner-versions.env."
+            else
+              echo "$name: $pinned is current."
+            fi
+          }
+          check zizmor       zizmorcore/zizmor    "$ZIZMOR_VERSION"
+          check actionlint   rhysd/actionlint     "$ACTIONLINT_VERSION"
+          check gitleaks     gitleaks/gitleaks    "$GITLEAKS_VERSION"
+          check gosec        securego/gosec       "$GOSEC_VERSION"
+          check trivy        aquasecurity/trivy   "$TRIVY_VERSION"
+          check osv-scanner  google/osv-scanner   "$OSV_SCANNER_VERSION"
+          exit 0
+
+      # The image is a PUBLIC package once this repo ships (see README's "Why a separate repo")
+      # but is private today, same state as the repo itself — so this login is needed now and
+      # becomes a no-op-but-harmless once both flip public.
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `:main` is this repo's "latest published release" tag (release.yml pushes it alongside
+      # the version tag on every release) — same convention and same reasoning as the main
+      # repo's build-images.yml: scanning a fresh build here would pull today's base layer and
+      # report a result the actually-published image doesn't have.
+      - name: Scan published image (trivy)
+        id: trivy
+        continue-on-error: true
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}:main
+          # true on a manual dispatch with the box checked, OR on the weekly (Monday) cron —
+          # the daily cron falls through to the normal HIGH,CRITICAL floor.
+          FULL_AUDIT: ${{ inputs.full_security_audit == true || github.event.schedule == '0 4 * * 1' }}
+        run: |
+          set -uo pipefail
+          mkdir -p security-reports
+
+          if [ "$FULL_AUDIT" = "true" ]; then
+            SEVERITY='UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL'
+            UNFIXED=''
+          else
+            SEVERITY='HIGH,CRITICAL'
+            UNFIXED='--ignore-unfixed'
+          fi
+
+          report="security-reports/trivy-image.json"
+          echo "::group::trivy image $IMAGE"
+          if ! trivy image --quiet --scanners vuln --pkg-types os,library \
+               --severity "$SEVERITY" $UNFIXED \
+               --format json --output "$report" "$IMAGE"; then
+            echo "::error::$IMAGE — trivy could not complete a scan. This is a failure, not a clean result."
+            echo "::endgroup::"
+            exit 1
+          fi
+
+          if ! trivy convert --format table --exit-code 1 "$report"; then
+            echo "::endgroup::"
+            echo "::error::$IMAGE — vulnerabilities found at severity $SEVERITY. See the trivy-image.json artifact."
+            exit 1
+          fi
+          echo "::endgroup::"
+          echo "No $SEVERITY vulnerabilities in the scanned image."
+
+      - name: Scan go.sum (osv-scanner)
+        id: osv
+        continue-on-error: true
+        env:
+          # true on a manual dispatch with the box checked, OR on the weekly (Monday) cron —
+          # the daily cron falls through to the normal HIGH,CRITICAL floor.
+          FULL_AUDIT: ${{ inputs.full_security_audit == true || github.event.schedule == '0 4 * * 1' }}
+        run: |
+          set -uo pipefail
+          mkdir -p security-reports
+
+          # This module has zero external dependencies today (go.mod has no `require` block),
+          # so `go.sum` doesn't exist — Go only generates it once there's something to
+          # checksum. osv-scanner then fails outright (exit 127, "no such file or directory")
+          # rather than reporting a clean scan, which reads exactly like a broken step rather
+          # than what it actually is: nothing to scan yet. This guard is what makes that
+          # distinction — the moment a real dependency is added, go.sum appears and this step
+          # starts actually scanning it.
+          if [ ! -f go.sum ]; then
+            echo "No go.sum (zero external dependencies) — nothing to scan."
+            exit 0
+          fi
+
+          ALL_VULNS=''
+          if [ "$FULL_AUDIT" = "true" ]; then
+            ALL_VULNS='--all-vulns'
+          fi
+
+          rc=0
+          osv-scanner scan source $ALL_VULNS \
+            --lockfile=go.sum \
+            --format=markdown --output-file=security-reports/osv-scanner.md || rc=$?
+
+          if [ -s security-reports/osv-scanner.md ]; then
+            printf '## osv-scanner\n\n' >> "$GITHUB_STEP_SUMMARY"
+            tee -a "$GITHUB_STEP_SUMMARY" < security-reports/osv-scanner.md
+          fi
+
+          case "$rc" in
+            0) echo "No known vulnerabilities in go.sum." ;;
+            1) echo "::error::osv-scanner found known vulnerabilities — see the job summary." ;;
+            *) echo "::error::osv-scanner exited $rc without completing a scan." ;;
+          esac
+          exit "$rc"
+
+      - name: Upload scanner reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: security-reports
+          path: security-reports/
+          retention-days: 14
+          if-no-files-found: warn
+
+      # Gate: the job must fail if gitleaks, trivy or osv-scanner found anything, even though
+      # each ran with continue-on-error so the others still got to report. Same pattern the main
+      # repo's nightly-tests.yml uses for the equivalent job.
+      - name: Fail the job if any scanner found something
+        if: steps.gitleaks.outcome == 'failure' || steps.trivy.outcome == 'failure' || steps.osv.outcome == 'failure'
+        run: |
+          echo "::error::At least one scanner reported a finding or failed to complete — see the steps above and the security-reports artifact."
+          exit 1

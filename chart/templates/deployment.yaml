@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "plutus-collector.fullname" . }}
+  labels:
+    {{- include "plutus-collector.labels" . | nindent 4 }}
+spec:
+  # Fixed at 1 replica, not a HorizontalPodAutoscaler target — see values.yaml's comment and the
+  # design doc's CronJob-vs-Deployment section. A second replica would just push the same batch
+  # twice; the backend's delete-then-insert idempotency (design doc §1) makes that harmless but
+  # pointless.
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "plutus-collector.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "plutus-collector.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+        - name: pusher
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.metricsPort }}
+              protocol: TCP
+          env:
+            - name: OPENCOST_URL
+              value: {{ include "plutus-collector.openCostUrl" . | quote }}
+            - name: PLUTUS_INGEST_URL
+              value: {{ required "plutusIngestUrl is required" .Values.plutusIngestUrl | quote }}
+            - name: CLUSTER_NAME
+              value: {{ required "clusterName is required — set it to this cluster's name, e.g. \"prod-us-east-1\"" .Values.clusterName | quote }}
+            - name: CURRENCY
+              value: {{ required "currency is required — the ISO 4217 code OpenCost is priced in, e.g. \"USD\" (never defaulted, see values.yaml)" .Values.currency | quote }}
+            - name: PUSH_INTERVAL_MINUTES
+              value: {{ .Values.pushIntervalMinutes | quote }}
+            - name: METRICS_ADDR
+              value: {{ printf ":%d" (int .Values.metricsPort) | quote }}
+            - name: PLUTUS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "plutus-collector.secretName" . }}
+                  key: {{ include "plutus-collector.secretKey" . }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

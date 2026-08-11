@@ -1,0 +1,8 @@
+# Fetched by `helm dependency update` (the OpenCost subchart) — resolved fresh at publish time
+# (build/publish workflow) or by anyone validating the chart locally, never vendored.
+chart/charts/
+chart/Chart.lock
+
+# Local build output.
+/plutus-collector
+/dist/

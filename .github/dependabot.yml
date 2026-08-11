@@ -1,0 +1,37 @@
+version: 2
+updates:
+  # This repo's one application dependency set. Grouped into one weekly PR rather than one per
+  # module for the same reason plutus-cloud/plutus groups its ecosystems: fewer PRs to review,
+  # and packages that need to move together (there's no lockstep pair here today, but there's
+  # no reason to invite the multi-PR version of that failure either).
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+
+  # Action pins across release.yml, security.yml, nightly.yml and test.yml.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # The Dockerfile's builder + distroless base tags. Watches the *tag*, not CVEs accumulating
+  # inside a tag that doesn't move — nightly.yml's `trivy image` scan against the published
+  # image is the other half of that, same split as the main repo's dependabot.yml/
+  # nightly-tests.yml pair.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      docker-base-images:
+        patterns:
+          - "*"

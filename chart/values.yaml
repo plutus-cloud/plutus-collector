@@ -1,0 +1,99 @@
+# plutus-collector Helm chart values.
+#
+# Required, no default — chart install will fail validation (see templates/deployment.yaml's
+# `required` calls) rather than silently guessing:
+clusterName: "" # e.g. "prod-us-east-1" — labels every pushed row; see README's "Configuration".
+currency: "" # ISO 4217 code OpenCost is priced in, e.g. "USD". Never defaulted — OpenCost does
+# not report its own currency anywhere in its output (see plutus-backend's
+# docs/multi-currency.md), so guessing here would silently mislabel every dollar figure.
+
+# --- API key -----------------------------------------------------------------------------------
+# Mint a key via `POST /api/accounts/:accountId/cost-sources/kubernetes/api-key` in the Plutus
+# UI/API (see README). Exactly one of the below must be set:
+#   1. apiKey: paste the plaintext key directly — the chart creates a Secret for you. Convenient
+#      for a quickstart, but the key then lives in your Helm release values/history in plaintext.
+#   2. existingSecret + existingSecretKey: point at a Secret you created and manage yourself
+#      (e.g. via Sealed Secrets / External Secrets / SOPS) — nothing in this chart ever sees the
+#      plaintext value.
+apiKey: ""
+existingSecret: ""
+existingSecretKey: "api-key"
+
+# Where the pusher POSTs batches. The default is Plutus's live Hetzner deployment.
+plutusIngestUrl: "https://console.plutus-cloud.com/api/ingest/kubernetes-cost"
+
+# How often the agent queries OpenCost and pushes a batch. Defaults to daily (1440), matching
+# OpenCost's own daily allocation-aggregation cadence — pushing more often buys nothing.
+pushIntervalMinutes: 1440
+
+image:
+  # No extra path segment needed (unlike when this lived nested in the plutus monorepo) —
+  # plutus-collector is a single-purpose repo now, so the repo name and image name are the
+  # same thing.
+  repository: ghcr.io/plutus-cloud/plutus-collector
+  # Empty, deliberately — templates/deployment.yaml falls back to `.Chart.AppVersion` when this
+  # is unset, which release.yml already sets correctly on every release
+  # (`helm package --app-version "$tag"`). This used to be a hardcoded "0.1.0" placeholder that
+  # was NEVER a real published tag (every real release is "v0.1.0"/"v0.1.1"/"v0.1.2", with a
+  # "v" prefix) — confirmed live, a customer install with no override would pull a tag that has
+  # never existed and fail with a generic image-pull error. Only set this to pin an install to a
+  # version older than the chart it came from; leave it empty otherwise so a `helm install`
+  # always gets the app version matching the chart version, automatically.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+replicaCount: 1 # deliberately fixed at 1 — see the design doc's CronJob-vs-Deployment section;
+# this is a long-lived process with an in-process retry loop, not a horizontally-scaled worker.
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    # No cpu limit, deliberately — this is a background pusher that's idle almost all the time
+    # and then does a periodic (daily by default, see pushIntervalMinutes) burst of work querying
+    # OpenCost and posting a batch; a hard CPU limit would throttle exactly that burst rather than
+    # the idle time it's actually sized for.
+    memory: 64Mi
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+securityContext:
+  runAsNonRoot: true
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+metricsPort: 9100
+
+service:
+  # Exposes /metrics (and /healthz) as a plain ClusterIP Service, not a ServiceMonitor — we
+  # can't assume the customer runs prometheus-operator, so a plain Service is the safer default;
+  # see README's "Scraping /metrics" for how to point Alloy/Prometheus at it either way.
+  enabled: true
+  port: 9100
+
+# --- OpenCost -----------------------------------------------------------------------------------
+opencost:
+  # true (default): installs OpenCost as a subchart dependency — one `helm install`, no
+  # prerequisites. false: use an OpenCost instance you already run; set `endpoint` below and the
+  # subchart is skipped entirely (Chart.yaml's dependency `condition`).
+  enabled: true
+
+  # Only used when enabled=false. The pusher's OPENCOST_URL env var — e.g.
+  # http://opencost.opencost.svc.cluster.local:9003 or wherever your existing install listens.
+  endpoint: ""
+
+  # Everything else under this `opencost:` key is passed through as the OpenCost subchart's own
+  # values (Helm's standard "key matches dependency name" convention) when enabled=true. See
+  # that chart's own values.yaml/README for what's available — left empty here to take its
+  # defaults. TODO: confirm the subchart's actual values shape once its repo/name is verified
+  # (see Chart.yaml's dependencies TODO).

@@ -1,0 +1,20 @@
+plutus-collector has been installed.
+
+Cluster name:   {{ .Values.clusterName }}
+Ingest URL:     {{ .Values.plutusIngestUrl }}
+Push interval:  every {{ .Values.pushIntervalMinutes }} minutes
+OpenCost:       {{ if .Values.opencost.enabled }}bundled subchart{{ else }}{{ .Values.opencost.endpoint }}{{ end }}
+
+Check it's working:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "plutus-collector.fullname" . }} 9100:{{ .Values.service.port }}
+  curl localhost:9100/healthz
+  curl localhost:9100/metrics
+
+Look for `plutus_collector_last_push_success 1` after the first push cycle (immediate on
+startup, then every {{ .Values.pushIntervalMinutes }} minutes). You can also check
+`last_ingested_at` on the Kubernetes cost source's connection panel in the Plutus UI.
+
+If `plutus_collector_last_push_success 0`, check the pod logs:
+
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "plutus-collector.fullname" . }}

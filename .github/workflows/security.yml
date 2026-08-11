@@ -1,0 +1,222 @@
+name: Security Scan
+
+# Same shape as plutus-cloud/plutus's own security.yml, scaled to what this repo actually is:
+# a Go module, one Dockerfile, one Helm chart — no npm, no Terraform. Five scanners in ONE job
+# on every PR, for the same per-job-billing reason the main repo's copy documents.
+#
+# ── Why CLIs and not the official Actions ───────────────────────────────────────────────
+# This repo is private today (see README's "Why a separate repo" / "Currently private, not yet
+# public"), which makes GitHub Advanced Security — CodeQL, GitHub secret scanning,
+# dependency-review-action — unavailable, and `github/codeql-action/upload-sarif` 403s without
+# it. Nothing here uploads SARIF; every tool runs as a plain CLI instead, same as the main repo.
+# Worth revisiting once this repo goes public (GHAS is free on public repos), but there's no
+# reason to build two versions of this file for a state change that hasn't happened yet — this
+# one keeps working unchanged either way.
+#
+# ── Why gosec instead of semgrep ────────────────────────────────────────────────────────
+# The main repo's semgrep step runs JavaScript/TypeScript/React registry packs plus its own
+# `.semgrep/` tenant-isolation rules — none of that applies to a Go codebase with no tenant
+# model. gosec is the standard Go SAST scanner and plays the same role (hardcoded credentials,
+# unsafe patterns, weak crypto) for what's actually here.
+#
+# ── Blocking policy — same as the main repo ────────────────────────────────────────────
+# gitleaks blocks. Everything else is continue-on-error + a ::warning, since this is a rollout
+# against an existing (if young) codebase — warn first, then tighten once the backlog (if any)
+# is triaged. Delete a step's `continue-on-error: true` line to make it blocking; each step
+# already exits non-zero on findings so that deletion does something.
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      full_history:
+        description: 'gitleaks: scan the ENTIRE git history rather than just this branch'
+        type: boolean
+        default: true
+
+concurrency:
+  group: security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Scanners
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Load scanner version pins
+        run: grep -E '^[A-Z][A-Z0-9_]*=' .github/scanner-versions.env >> "$GITHUB_ENV"
+
+      - name: Create report directory
+        run: mkdir -p security-reports
+
+      - name: Install actionlint, gitleaks, trivy
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin actionlint
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          curl -sSfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin trivy
+          actionlint --version
+          gitleaks version
+          trivy --version
+
+      # zizmor is a Python tool, gosec a Go one — pip and `go install` respectively, no shared
+      # venv needed the way the main repo's three Python tools share one.
+      - name: Install zizmor
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/sec-venv
+          /tmp/sec-venv/bin/pip install --quiet --disable-pip-version-check "zizmor==${ZIZMOR_VERSION}"
+          echo "/tmp/sec-venv/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.26"
+          check-latest: false
+
+      - name: Install gosec
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/securego/gosec/releases/download/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gosec
+          gosec -version 2>&1 || true
+
+      # ── gitleaks — THE ONLY BLOCKING STEP ───────────────────────────────────────────────
+      # Same range-scan logic as the main repo's copy — base..head on a PR, full history on
+      # workflow_dispatch or when the base/head commits aren't reachable (force-push/rebase).
+      - name: gitleaks (secret scanning)
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          FULL_HISTORY: ${{ inputs.full_history }}
+        run: |
+          set -euo pipefail
+          scan_range=''
+          if [ "${FULL_HISTORY:-}" != 'true' ] && [ -n "${PR_BASE_SHA:-}" ] && [ -n "${PR_HEAD_SHA:-}" ]; then
+            if git cat-file -e "${PR_BASE_SHA}^{commit}" 2>/dev/null \
+               && git cat-file -e "${PR_HEAD_SHA}^{commit}" 2>/dev/null; then
+              scan_range="${PR_BASE_SHA}..${PR_HEAD_SHA}"
+            else
+              echo "::warning title=gitleaks::PR base/head commit not reachable (force-push or rebased base?) — falling back to a full-history scan."
+            fi
+          fi
+
+          if [ -n "$scan_range" ]; then
+            echo "Scanning commit range ${scan_range}"
+            log_opts="--no-merges --first-parent ${scan_range}"
+          else
+            echo 'Scanning full history'
+            log_opts=''
+          fi
+
+          gitleaks git . \
+            --platform github \
+            --no-banner \
+            --redact \
+            --report-format json \
+            --report-path security-reports/gitleaks.json \
+            --log-opts "$log_opts"
+
+      - name: zizmor (GitHub Actions SAST)
+        continue-on-error: true # delete this line to make zizmor blocking
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e -uo pipefail
+          zizmor --no-progress --persona=regular --format=plain --color=never . 2>&1 \
+            | tee security-reports/zizmor.txt
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            {
+              echo '### zizmor'
+              echo
+              echo '```'
+              head -c 60000 security-reports/zizmor.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            summary="$(grep -oE '^[0-9]+ findings' security-reports/zizmor.txt | head -1 || true)"
+            echo "::warning title=zizmor::${summary:-Exited non-zero (findings, or the audit failed to complete)} — see the job summary and the security-reports artifact."
+          fi
+          exit "$status"
+
+      - name: actionlint (workflow correctness)
+        continue-on-error: true # delete this line to make actionlint blocking
+        run: |
+          set +e -uo pipefail
+          actionlint 2>&1 | tee security-reports/actionlint.txt
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            {
+              echo '### actionlint'
+              echo
+              echo '```'
+              head -c 60000 security-reports/actionlint.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=actionlint::Reported problems in workflow files — see the job summary and the security-reports artifact."
+          fi
+          exit "$status"
+
+      # ── gosec — Go SAST, standing in for the main repo's semgrep JS/TS packs ────────────
+      - name: gosec (Go SAST)
+        continue-on-error: true # delete this line to make gosec blocking
+        run: |
+          set +e -uo pipefail
+          gosec -fmt=text -out=security-reports/gosec.txt ./... 2>&1 | tee -a security-reports/gosec.txt
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            {
+              echo '### gosec'
+              echo
+              echo '```'
+              head -c 60000 security-reports/gosec.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=gosec::Reported findings — see the job summary and the security-reports artifact."
+          fi
+          exit "$status"
+
+      # ── trivy config — Dockerfile + Helm chart misconfiguration ─────────────────────────
+      - name: trivy config (Dockerfile + Helm chart misconfiguration)
+        continue-on-error: true # delete this line to make trivy blocking
+        run: |
+          set +e -uo pipefail
+          trivy config . \
+            --quiet \
+            --exit-code 1 \
+            --skip-dirs security-reports \
+            --format table \
+            --output security-reports/trivy-config.txt
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            {
+              echo '### trivy config'
+              echo
+              echo '```'
+              head -c 60000 security-reports/trivy-config.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=trivy config::Exited non-zero (misconfigurations, or the scan failed to complete) — see the job summary and the security-reports artifact."
+          fi
+          exit "$status"
+
+      - name: Upload scanner reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: security-reports
+          path: security-reports/
+          retention-days: 14
+          if-no-files-found: warn
