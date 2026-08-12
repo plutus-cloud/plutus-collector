@@ -229,3 +229,7 @@ helm lint chart/
 
 Questions or issues installing or running this agent: [contact Plutus support](https://plutus-cloud.com)
 or open an issue in this repo.
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE).
