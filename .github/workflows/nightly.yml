@@ -134,10 +134,12 @@ jobs:
       # "Why a separate repo"), so this login is a no-op-but-harmless belt-and-braces for the
       # pull below — and still load-bearing on the first release of a new image, before its
       # package has been made public.
+      # GITHUB_TOKEN is what authenticates this login; the username field is not verified. The
+      # org name is used so the value does not vary with whatever triggered the run.
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # `:main` is this repo's "latest published release" tag (release.yml pushes it alongside
