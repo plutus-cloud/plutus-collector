@@ -1,15 +1,24 @@
 # plutus-collector
 
-A small Go agent you install into your own Kubernetes cluster to send Kubernetes
-cost-allocation data to [Plutus](https://plutus-cloud.com). It periodically queries
-[OpenCost](https://www.opencost.io/)'s local `/allocation` API (OpenCost computes
-per-namespace/workload cost allocation; this agent just forwards that output) and pushes it to
-Plutus over HTTPS.
+Small Go agents you run inside your own infrastructure to send cost data to
+[Plutus](https://plutus-cloud.com). Two of them, from this one repo:
 
-This is the companion agent for the Kubernetes cost source in Plutus's backend. The two
-communicate over one fixed HTTP/JSON contract (`POST /api/ingest/kubernetes-cost`, an API key
-you mint in Plutus) — no shared code, no shared release cadence, and no access to anything else
-in your account beyond that one endpoint.
+| Binary | Reads | Pushes to |
+|---|---|---|
+| `plutus-collector` | [OpenCost](https://www.opencost.io/)'s local `/allocation` API, in your Kubernetes cluster | `POST /api/ingest/kubernetes-cost` |
+| `plutus-litellm-collector` | your self-hosted [LiteLLM](https://docs.litellm.ai/) proxy's admin spend API | `POST /api/ingest/litellm-cost` |
+
+Both exist for the same reason: the system being measured runs **inside your network**, where
+nothing of Plutus's can reach it. So the agent runs on your side and pushes out, rather than
+Plutus polling in — which is also why neither needs you to open anything inbound.
+
+Each communicates over one fixed HTTP/JSON contract with an API key you mint in Plutus — no
+access to anything else in your account beyond that one endpoint. They share this repo's
+transport, retry policy and metrics (`internal/ingest`, `internal/pusher`, `internal/metrics`)
+and differ only in what they read and which environment variables they require.
+
+Everything below describes the Kubernetes agent unless it says otherwise; the LiteLLM one has
+its own section.
 
 ## Why a separate repo
 
@@ -214,16 +223,99 @@ helm lint chart/
 
 ### Package layout
 
-- `cmd/plutus-collector` — entrypoint: wires config, the OpenCost client, the ingest client, the
-  pusher loop, and the metrics/health HTTP server together; handles `SIGTERM`/`SIGINT` for a
-  clean shutdown.
-- `internal/config` — env-var loading and validation (12-factor, no config file).
-- `internal/opencost` — the OpenCost `/allocation` HTTP client.
-- `internal/ingest` — the Plutus batch JSON shape (a fixed contract with the backend's ingest
-  route) and the OpenCost-row → batch-row mapping logic.
-- `internal/pusher` — the ticker loop and in-process retry/backoff.
+Shared by both binaries:
+
+- `internal/pusher` — the ticker loop, in-process retry/backoff, and the `Source` interface each
+  collector implements. Its real subject is the failure policy (which errors are retryable, that
+  a 4xx must not consume the backoff budget, that an empty result is never pushed as an empty
+  batch), which is identical for every source and is exactly what drifts when a second agent
+  copies it instead of sharing it.
+- `internal/ingest` — the HTTP transport: auth header, status-code rules, retryable-vs-not, and
+  the `Response` shape. Deliberately knows nothing about what it is sending.
+- `internal/config` — env-var loading and validation (12-factor, no config file). `Common` plus
+  one loader per binary, since the required variables genuinely differ.
 - `internal/metrics` — the hand-rolled `/metrics` (Prometheus text format) and `/healthz`
   handlers.
+
+Kubernetes:
+
+- `cmd/plutus-collector` — entrypoint.
+- `internal/opencost` — the OpenCost `/allocation` HTTP client.
+- `internal/k8scost` — the Plutus batch JSON shape (a fixed contract with the backend's ingest
+  route), the OpenCost-row → batch-row mapping, and the `Source` implementation.
+
+LiteLLM:
+
+- `cmd/plutus-litellm-collector` — entrypoint.
+- `internal/litellm` — the proxy's spend-log client, the request-log → daily-tuple aggregation,
+  and the `Source` implementation.
+
+## LiteLLM collector
+
+Reads your LiteLLM proxy's own spend records and pushes a daily aggregate to Plutus. What that
+buys you is attribution a provider invoice structurally cannot give: OpenAI can tell you an API
+key spent $400, but not which of your teams or services spent it. Your gateway knows.
+
+```
+docker run -d --name plutus-litellm-collector \
+  -e PLUTUS_API_KEY=<key minted in Plutus> \
+  -e LITELLM_BASE_URL=http://litellm:4000 \
+  -e LITELLM_MASTER_KEY=<a LiteLLM key with admin scope> \
+  ghcr.io/plutus-cloud/plutus-litellm-collector:latest
+```
+
+`LITELLM_BASE_URL` may be a plain `http://` internal address — it never leaves your network.
+`PLUTUS_INGEST_URL` may not: it carries a Bearer API key and is rejected unless it is `https://`.
+
+| Variable | Required | Default |
+|---|---|---|
+| `PLUTUS_API_KEY` | yes | — |
+| `LITELLM_BASE_URL` | yes | — |
+| `LITELLM_MASTER_KEY` | yes | — |
+| `PLUTUS_INGEST_URL` | no | `https://console.plutus-cloud.com/api/ingest/litellm-cost` |
+| `PUSH_INTERVAL_MINUTES` | no | `1440` (daily) |
+| `METRICS_ADDR` | no | `:9100` |
+
+Note there is no `CURRENCY` here, unlike the Kubernetes agent. LiteLLM prices from a
+USD-denominated model price map, so Plutus asserts the currency itself rather than asking you for
+a value nothing would check.
+
+### What it sends
+
+One row per `(model, upstream provider, virtual key, team)` per UTC day:
+
+```json
+{"rows": [
+  {"date": "2026-08-28", "model": "gpt-4o", "provider": "openai",
+   "virtual_key": "checkout-svc", "team": "platform",
+   "spend": 1.5, "input_tokens": 100, "output_tokens": 20}
+]}
+```
+
+**Per-request data never leaves your network.** The collector reads request-level spend logs
+locally and reduces them to those daily tuples before pushing. It reads request logs rather than
+LiteLLM's own pre-aggregated daily endpoints because those break down one dimension at a time —
+spend by model, spend by key — and not the combination, which is what Plutus needs to make every
+breakdown add up to the same total.
+
+### Spend for a provider you already track directly
+
+If you also have Plutus's OpenAI or Anthropic connector enabled, the same dollars would arrive
+twice — once as that provider's invoice, once as the gateway's estimate of the same traffic. So
+Plutus does **not** count a gateway provider's spend until you decide which figure your totals
+should use. New providers show up in the LiteLLM cost source's settings marked as awaiting a
+decision; nothing is counted, and nothing is silently double-counted, in the meantime.
+
+Token counts are recorded either way, so a provider whose costs you track through its own
+connector still shows per-team and per-key usage in Plutus.
+
+### Status
+
+**The LiteLLM admin API this reads has not yet been verified against a live instance.** Unlike
+the OpenCost client — checked against OpenCost's published `swagger.json` — the field names in
+`internal/litellm/client.go` are read optimistically from LiteLLM's documentation, and that
+file's header lists exactly what still needs confirming. Expect to hit issues; please report
+them.
 
 ## Support
 

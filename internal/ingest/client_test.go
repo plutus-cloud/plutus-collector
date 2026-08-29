@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -19,7 +20,7 @@ func TestClient_Push_Success(t *testing.T) {
 	defer server.Close()
 
 	c := NewClient(server.URL, "test-key", server.Client())
-	resp, err := c.Push(context.Background(), Batch{ClusterName: "prod-1", Currency: "USD"})
+	resp, err := c.Push(context.Background(), map[string]any{"cluster_name": "prod-1", "currency": "USD"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -39,7 +40,7 @@ func TestClient_Push_5xxIsRetryable(t *testing.T) {
 	defer server.Close()
 
 	c := NewClient(server.URL, "test-key", server.Client())
-	_, err := c.Push(context.Background(), Batch{})
+	_, err := c.Push(context.Background(), struct{}{})
 
 	var retryable *RetryableError
 	if !errors.As(err, &retryable) {
@@ -55,7 +56,7 @@ func TestClient_Push_4xxIsNotRetryable(t *testing.T) {
 	defer server.Close()
 
 	c := NewClient(server.URL, "bad-key", server.Client())
-	_, err := c.Push(context.Background(), Batch{})
+	_, err := c.Push(context.Background(), struct{}{})
 
 	var retryable *RetryableError
 	if errors.As(err, &retryable) {
@@ -69,10 +70,34 @@ func TestClient_Push_4xxIsNotRetryable(t *testing.T) {
 func TestClient_Push_NetworkFailureIsRetryable(t *testing.T) {
 	// Point at a URL nothing is listening on.
 	c := NewClient("http://127.0.0.1:0", "test-key", http.DefaultClient)
-	_, err := c.Push(context.Background(), Batch{})
+	_, err := c.Push(context.Background(), struct{}{})
 
 	var retryable *RetryableError
 	if !errors.As(err, &retryable) {
 		t.Fatalf("expected a RetryableError for a network failure, got %v (%T)", err, err)
+	}
+}
+
+// The transport must serialise whatever it is handed and nothing more — it has no knowledge of
+// any source's payload shape, which is what lets both collectors in this repo share it.
+func TestPush_SendsThePayloadVerbatim(t *testing.T) {
+	var gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(Response{Accepted: 1})
+	}))
+	defer server.Close()
+
+	type litellmish struct {
+		Rows []map[string]any `json:"rows"`
+	}
+	c := NewClient(server.URL, "test-key", server.Client())
+	if _, err := c.Push(context.Background(), litellmish{Rows: []map[string]any{{"model": "gpt-4o"}}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotBody != `{"rows":[{"model":"gpt-4o"}]}` {
+		t.Errorf("payload was not sent verbatim, got %s", gotBody)
 	}
 }

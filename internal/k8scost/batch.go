@@ -1,22 +1,23 @@
-// Package ingest defines the exact JSON batch shape POSTed to Plutus's
-// POST /api/ingest/kubernetes-cost, and maps OpenCost allocation rows into it.
+// Package k8scost holds the Kubernetes half of this repo: the exact JSON batch shape POSTed to
+// Plutus's POST /api/ingest/kubernetes-cost, and the mapping from OpenCost allocation rows into
+// it.
 //
-// This shape is a fixed contract with the backend ingest route being built in parallel (see
-// plutus-backend, out of scope for this component) — do not rename fields or change types
-// without coordinating there. Sentinel values below (`__unallocated__`, `__unknown_cluster__`)
-// mirror lib/sync/opencost.js's existing conventions exactly, since the backend's row-mapping
-// logic is being ported from that file (design doc §1).
-package ingest
+// Split out of internal/ingest when the LiteLLM collector was added. That package is now the
+// shared transport and knows nothing about what it sends; the per-source payload shape,
+// sentinels and rounding rules live beside the source that produces them. Nothing here is
+// reachable from the LiteLLM binary, which is the point — the two contracts can move
+// independently.
+//
+// This shape is a fixed contract with plutus-backend's routes/kubernetes-cost-ingest.js — do
+// not rename fields or change types without coordinating there. The sentinel values below
+// (`__unallocated__`, `__unknown_cluster__`) mirror that route's row-mapping conventions
+// exactly.
+package k8scost
 
 import (
 	"math"
-	"time"
 )
 
-// UnallocatedWorkload marks cost OpenCost could not attribute to a specific workload (no
-// namespace, or no controller/pod/container identity). Kept as a real row rather than dropped —
-// unallocated/idle capacity is actionable, not noise. Matches
-// lib/sync/opencost.js's UNALLOCATED_WORKLOAD sentinel.
 const UnallocatedWorkload = "__unallocated__"
 
 // UnknownCluster marks a row with no cluster identity at all — reachable only when OpenCost's
@@ -50,16 +51,6 @@ type Batch struct {
 	ClusterName string `json:"cluster_name"`
 	Currency    string `json:"currency"`
 	Rows        []Row  `json:"rows"`
-}
-
-// Response is the backend's reply, per the design doc's §1 ingest route (mirroring
-// POST /api/ingest/usage's response shape): how many rows were accepted vs. rejected, and why.
-// This is the customer's only visibility into a partial failure, so the agent logs every
-// rejection/error clearly rather than only checking the HTTP status.
-type Response struct {
-	Accepted int      `json:"accepted"`
-	Rejected int      `json:"rejected"`
-	Errors   []string `json:"errors,omitempty"`
 }
 
 // OpenCostRow is the minimal shape this package maps from — deliberately not a direct
@@ -183,15 +174,4 @@ func sign(f float64) float64 {
 		return -1
 	}
 	return 1
-}
-
-// PreviousUTCDayWindow returns [start, end) for "yesterday" in UTC, the window OpenCost is
-// queried over — matches the pull runner's daily cadence and OpenCost's own daily aggregation
-// (docs/kubernetes-cost-allocation.md §7).
-func PreviousUTCDayWindow(now time.Time) (start, end time.Time, dateKey string) {
-	today := time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day(), 0, 0, 0, 0, time.UTC)
-	start = today.AddDate(0, 0, -1)
-	end = today
-	dateKey = start.Format("2006-01-02")
-	return
 }

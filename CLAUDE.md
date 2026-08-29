@@ -11,6 +11,19 @@ the same change that flips the `kubernetes` cost source's `is_live` flag in the 
 Because this repo is customer-facing (or will be shortly), its commit history is part of the
 product's public trust signal, not just an internal log — hold it to that standard.
 
+**Two binaries, one shared core.** `cmd/plutus-collector` (OpenCost, Kubernetes) and
+`cmd/plutus-litellm-collector` (a self-hosted LiteLLM proxy) share `internal/pusher`,
+`internal/ingest`, `internal/metrics` and `internal/config`'s `Common`. When adding a third
+source: implement `pusher.Source`, put the payload shape and mapping in its own `internal/`
+package beside the client, add a `Load<X>` in `internal/config`, and add a `cmd/` entrypoint plus
+a Dockerfile stage. Do **not** add a `MODE` env var — the required variables differ per source
+(`CLUSTER_NAME`/`CURRENCY` are mandatory for OpenCost and meaningless for LiteLLM), and branching
+validation on a mode is what the one-loader-per-binary split exists to avoid.
+
+**Dockerfile stage order is load-bearing.** `docker build` with no `--target` builds the last
+stage, which is deliberately the Kubernetes image, so a build command predating the LiteLLM
+collector still produces what it always did. Build the other with `--target litellm`.
+
 ## Commit conventions (read before running `git commit`)
 
 - **Author/committer identity**: `Plutus <support@plutus-cloud.com>`, not whatever a session's

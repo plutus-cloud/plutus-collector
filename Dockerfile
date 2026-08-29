@@ -28,15 +28,46 @@ COPY . .
 
 # CGO_ENABLED=0 for a fully static binary (no libc dependency, required for distroless/static).
 # -trimpath and -ldflags="-s -w" strip filesystem paths and debug symbols from the binary.
+# Both collectors are built from this one stage — they share internal/ingest, internal/pusher and
+# internal/metrics, so compiling them together is cheaper than two builds and guarantees the two
+# binaries were cut from the same commit of that shared code.
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -trimpath \
     -ldflags="-s -w" \
     -o /out/plutus-collector \
     ./cmd/plutus-collector
 
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -trimpath \
+    -ldflags="-s -w" \
+    -o /out/plutus-litellm-collector \
+    ./cmd/plutus-litellm-collector
+
 # Also pinned to its resolved manifest-list digest, same reasoning and same
 # tag-plus-digest syntax as the builder stage above — Dependabot's `docker` ecosystem bumps
 # the digest, the tag stays for readability.
+# ─── Two images, one Dockerfile ─────────────────────────────────────────────
+#
+# Each collector gets its own single-binary image with its own ENTRYPOINT, rather than one image
+# carrying both behind a --entrypoint override or a MODE variable. Two reasons: an image that
+# ships a binary it never runs is unnecessary attack surface on something running inside a
+# customer's network, and `docker run <image>` should do the obvious thing without a flag.
+#
+# STAGE ORDER IS LOAD-BEARING. `docker build` with no --target builds the LAST stage, so the
+# Kubernetes image stays last and a build command that predates the LiteLLM collector produces
+# exactly what it always did. Putting the new stage last would silently republish the litellm
+# binary under the plutus-collector tag.
+#
+# Build the LiteLLM one explicitly:
+#   docker build --target litellm -t ghcr.io/plutus-cloud/plutus-litellm-collector .
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS litellm
+
+COPY --from=builder /out/plutus-litellm-collector /plutus-litellm-collector
+
+EXPOSE 9100
+
+ENTRYPOINT ["/plutus-litellm-collector"]
+
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS final
 
 # distroless/static-debian12:nonroot already runs as a non-root uid (65532) with no shell, no

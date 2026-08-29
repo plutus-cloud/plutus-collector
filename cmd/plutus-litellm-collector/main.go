@@ -1,6 +1,16 @@
-// Command plutus-collector is a long-lived process (deliberately not a Kubernetes CronJob — see
-// the design doc's §2, "The agent") that periodically queries an in-cluster OpenCost instance's
-// /allocation API and pushes the result to Plutus's kubernetes-cost ingest endpoint.
+// Command plutus-litellm-collector is a long-lived process that periodically reads a
+// self-hosted LiteLLM proxy's admin spend API and pushes a daily aggregate to Plutus's
+// litellm-cost ingest endpoint.
+//
+// A sibling of cmd/plutus-collector rather than a mode of it: the two share this repo's
+// transport, retry policy, metrics and loop (internal/ingest, internal/pusher,
+// internal/metrics), and differ in the two things that genuinely differ — which system they read
+// and which environment variables are mandatory. See internal/config's package comment.
+//
+// Why a push agent at all, when every other Plutus AI cost source is polled: a self-hosted
+// gateway sits inside the customer's network, where nothing of Plutus's can reach it. Same
+// constraint as OpenCost, same answer — the collector runs on their side and pushes out. Nothing
+// per-request crosses the wire; the aggregation happens here.
 package main
 
 import (
@@ -14,9 +24,8 @@ import (
 
 	"github.com/plutus-cloud/plutus-collector/internal/config"
 	"github.com/plutus-cloud/plutus-collector/internal/ingest"
-	"github.com/plutus-cloud/plutus-collector/internal/k8scost"
+	"github.com/plutus-cloud/plutus-collector/internal/litellm"
 	"github.com/plutus-cloud/plutus-collector/internal/metrics"
-	"github.com/plutus-cloud/plutus-collector/internal/opencost"
 	"github.com/plutus-cloud/plutus-collector/internal/pusher"
 )
 
@@ -24,26 +33,24 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	cfg, err := config.LoadOpenCost(os.Getenv)
+	cfg, err := config.LoadLiteLLM(os.Getenv)
 	if err != nil {
 		logger.Error("startup failed", "error", err)
 		os.Exit(1)
 	}
 
-	logger.Info("starting plutus-collector",
-		"opencost_url", cfg.OpenCostURL,
+	// The master key is deliberately absent from this line. Everything else about the
+	// configuration is worth having in a support transcript; a credential is not.
+	logger.Info("starting plutus-litellm-collector",
+		"litellm_base_url", cfg.LiteLLMBaseURL,
 		"plutus_ingest_url", cfg.PlutusIngestURL,
-		"cluster_name", cfg.ClusterName,
-		"currency", cfg.Currency,
 		"push_interval", cfg.PushInterval.String(),
 		"metrics_addr", cfg.MetricsAddr,
 	)
 
 	httpClient := &http.Client{Timeout: cfg.HTTPTimeout}
-	source := &k8scost.Source{
-		Allocations: opencost.New(cfg.OpenCostURL, httpClient),
-		ClusterName: cfg.ClusterName,
-		Currency:    cfg.Currency,
+	source := &litellm.Source{
+		Logs: litellm.New(cfg.LiteLLMBaseURL, cfg.LiteLLMMasterKey, httpClient),
 	}
 	ingestClient := ingest.NewClient(cfg.PlutusIngestURL, cfg.PlutusAPIKey, httpClient)
 	metricsState := metrics.NewState()
