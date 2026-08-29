@@ -16,7 +16,7 @@
 # actually scanned/verified. The tag stays alongside it (`image:tag@sha256:...`) purely for
 # readability — Dependabot's `docker` ecosystem still resolves and bumps the digest when a new
 # patch is proposed, so this doesn't lose the update path the paragraph above is about.
-FROM golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS builder
+FROM golang:1.27.0-alpine@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc AS builder
 
 WORKDIR /src
 
@@ -37,7 +37,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 # Also pinned to its resolved manifest-list digest, same reasoning and same
 # tag-plus-digest syntax as the builder stage above — Dependabot's `docker` ecosystem bumps
 # the digest, the tag stays for readability.
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:1b7b9f0f0e0a1d2155f531db587cc48ec26aaf97ab64364225f5bf18a054e66a AS final
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS final
 
 # distroless/static-debian12:nonroot already runs as a non-root uid (65532) with no shell, no
 # package manager, and no writable filesystem beyond what's mounted — nothing here needs to
