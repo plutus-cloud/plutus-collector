@@ -46,6 +46,15 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 # Also pinned to its resolved manifest-list digest, same reasoning and same
 # tag-plus-digest syntax as the builder stage above — Dependabot's `docker` ecosystem bumps
 # the digest, the tag stays for readability.
+# ONE pin for the runtime base, shared by both images below.
+#
+# Not two copies of the same `FROM gcr.io/distroless/...@sha256:...` line, and this is a
+# correctness point rather than tidiness: a second copy is a second thing for Dependabot to bump
+# and a second thing for it to miss, and a stale runtime base is the quiet failure mode — the
+# image still builds, the scanners still pass, and it just no longer has the fixes the other one
+# got. With a single pin the two images cannot diverge.
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS runtime-base
+
 # ─── Two images, one Dockerfile ─────────────────────────────────────────────
 #
 # Each collector gets its own single-binary image with its own ENTRYPOINT, rather than one image
@@ -60,7 +69,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 #
 # Build the LiteLLM one explicitly:
 #   docker build --target litellm -t ghcr.io/plutus-cloud/plutus-litellm-collector .
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS litellm
+FROM runtime-base AS litellm
 
 COPY --from=builder /out/plutus-litellm-collector /plutus-litellm-collector
 
@@ -68,7 +77,7 @@ EXPOSE 9100
 
 ENTRYPOINT ["/plutus-litellm-collector"]
 
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS final
+FROM runtime-base AS final
 
 # distroless/static-debian12:nonroot already runs as a non-root uid (65532) with no shell, no
 # package manager, and no writable filesystem beyond what's mounted — nothing here needs to

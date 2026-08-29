@@ -44,10 +44,13 @@ jobs:
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
-      # No extra path segment (ghcr.io/${{ github.repository }} resolves to
-      # ghcr.io/plutus-cloud/plutus-collector directly) — unlike the monorepo's images, this repo
-      # builds exactly one artifact, so repo name and image name are the same thing.
-      - name: Build & push image
+      # No extra path segment for the Kubernetes agent (ghcr.io/${{ github.repository }} resolves
+      # to ghcr.io/plutus-cloud/plutus-collector directly) — it is the repo's headline artifact,
+      # so repo name and image name are the same thing. The LiteLLM collector, added later, is a
+      # sibling image under the same org rather than a tag of this one: they are different
+      # programs with different required configuration, and sharing a tag namespace would make
+      # `:main` ambiguous.
+      - name: Build & push image (Kubernetes / OpenCost)
         id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
@@ -58,6 +61,23 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}:${{ github.ref_name }}
             ghcr.io/${{ github.repository }}:main
+
+      # `target: litellm` — the Dockerfile deliberately keeps the Kubernetes stage last so that a
+      # build with no target still produces it (see that file's stage-order note). This is the
+      # one place that must name the other stage explicitly; forgetting it here would silently
+      # publish the Kubernetes binary under the LiteLLM image name.
+      - name: Build & push image (LiteLLM)
+        id: build_litellm
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: ./Dockerfile
+          target: litellm
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/plutus-litellm-collector:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/plutus-litellm-collector:main
 
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
@@ -70,6 +90,15 @@ jobs:
       - name: Sign image (cosign, keyless)
         env:
           IMAGE_DIGEST: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "$IMAGE_DIGEST"
+
+      # Signed on the same terms as the agent above, and for the same reason: this one also runs
+      # inside a customer's network holding an admin credential, so it is exactly as much of a
+      # trust question. An unsigned second image would quietly weaken the guarantee the first
+      # one's signature is making.
+      - name: Sign image (LiteLLM) (cosign, keyless)
+        env:
+          IMAGE_DIGEST: ghcr.io/${{ github.repository_owner }}/plutus-litellm-collector@${{ steps.build_litellm.outputs.digest }}
         run: cosign sign --yes "$IMAGE_DIGEST"
 
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
@@ -138,6 +167,19 @@ jobs:
           image: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
           format: cyclonedx-json
           output-file: sbom/plutus-collector-${{ github.ref_name }}.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      # A second SBOM rather than reusing the first. The two images share a runtime base and a Go
+      # toolchain, so their contents are near-identical — but "near-identical" is an assumption,
+      # and an SBOM whose whole purpose is to state what shipped should not rest on one. The
+      # upload step below globs sbom/, so it needs no change.
+      - name: SBOM (LiteLLM)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/plutus-litellm-collector:${{ github.ref_name }}
+          format: cyclonedx-json
+          output-file: sbom/plutus-litellm-collector-${{ github.ref_name }}.cdx.json
           upload-artifact: false
           upload-release-assets: false
 
