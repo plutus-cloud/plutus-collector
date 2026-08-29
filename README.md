@@ -372,6 +372,8 @@ docker build -t plutus-collector:dev .
 docker build --target litellm -t plutus-litellm-collector:dev .
 ```
 
+Conventions for commits, PR descriptions and merging are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 Adding a third source: implement `pusher.Source`, put its payload shape and mapping in its own
 `internal/` package beside its client, add a `Load<X>` to `internal/config`, and add a `cmd/`
 entrypoint plus a Dockerfile stage. Deliberately **not** a `MODE` env var — the required
