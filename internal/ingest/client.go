@@ -9,7 +9,12 @@ import (
 	"net/http"
 )
 
-// Client POSTs a Batch to Plutus's kubernetes-cost ingest endpoint.
+// Client POSTs a JSON payload to one of Plutus's cost-ingest endpoints.
+//
+// Deliberately knows nothing about what it is sending. The payload shape is the source's
+// business (internal/k8scost, internal/litellm), and the URL is configuration — which is what
+// lets one transport, one retry policy and one set of status-code rules serve every collector
+// in this repo rather than being copied per source.
 type Client struct {
 	URL        string
 	APIKey     string
@@ -34,8 +39,8 @@ func (e *RetryableError) Unwrap() error { return e.Err }
 // Push sends the batch and returns the parsed Response. Callers should log resp.Rejected /
 // resp.Errors even on a 2xx status — a partial-acceptance response is the customer's only
 // visibility into which rows the backend couldn't ingest (design doc §1).
-func (c *Client) Push(ctx context.Context, batch Batch) (*Response, error) {
-	body, err := json.Marshal(batch)
+func (c *Client) Push(ctx context.Context, payload any) (*Response, error) {
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshalling batch: %w", err)
 	}

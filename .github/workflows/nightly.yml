@@ -130,13 +130,16 @@ jobs:
           check osv-scanner  google/osv-scanner   "$OSV_SCANNER_VERSION"
           exit 0
 
-      # The image is a PUBLIC package once this repo ships (see README's "Why a separate repo")
-      # but is private today, same state as the repo itself — so this login is needed now and
-      # becomes a no-op-but-harmless once both flip public.
+      # The repo is public now; the images are published as public packages too (see README's
+      # "Why a separate repo"), so this login is a no-op-but-harmless belt-and-braces for the
+      # pull below — and still load-bearing on the first release of a new image, before its
+      # package has been made public.
+      # GITHUB_TOKEN is what authenticates this login; the username field is not verified. The
+      # org name is used so the value does not vary with whatever triggered the run.
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # `:main` is this repo's "latest published release" tag (release.yml pushes it alongside
@@ -147,7 +150,13 @@ jobs:
         id: trivy
         continue-on-error: true
         env:
-          IMAGE: ghcr.io/${{ github.repository }}:main
+          # Both published images. They share a runtime base and Go toolchain so their findings
+          # will usually match, but this job's entire premise is scanning what actually shipped
+          # rather than what should have — extending that to one image and not the other would
+          # keep the premise and lose the guarantee.
+          IMAGES: >-
+            ghcr.io/${{ github.repository }}:main
+            ghcr.io/${{ github.repository_owner }}/plutus-litellm-collector:main
           # true on a manual dispatch with the box checked, OR on the weekly (Monday) cron —
           # the daily cron falls through to the normal HIGH,CRITICAL floor.
           FULL_AUDIT: ${{ inputs.full_security_audit == true || github.event.schedule == '0 4 * * 1' }}
@@ -163,23 +172,32 @@ jobs:
             UNFIXED='--ignore-unfixed'
           fi
 
-          report="security-reports/trivy-image.json"
-          echo "::group::trivy image $IMAGE"
-          if ! trivy image --quiet --scanners vuln --pkg-types os,library \
-               --severity "$SEVERITY" $UNFIXED \
-               --format json --output "$report" "$IMAGE"; then
-            echo "::error::$IMAGE — trivy could not complete a scan. This is a failure, not a clean result."
-            echo "::endgroup::"
-            exit 1
-          fi
+          # Every image is scanned before the job fails, so one bad image doesn't hide the other's
+          # findings — `failed` is collected and checked at the end rather than exiting early.
+          failed=0
+          for IMAGE in $IMAGES; do
+            report="security-reports/trivy-image-$(echo "$IMAGE" | tr '/:' '__').json"
+            echo "::group::trivy image $IMAGE"
+            if ! trivy image --quiet --scanners vuln --pkg-types os,library \
+                 --severity "$SEVERITY" $UNFIXED \
+                 --format json --output "$report" "$IMAGE"; then
+              echo "::error::$IMAGE — trivy could not complete a scan. This is a failure, not a clean result."
+              echo "::endgroup::"
+              failed=1
+              continue
+            fi
 
-          if ! trivy convert --format table --exit-code 1 "$report"; then
+            if ! trivy convert --format table --exit-code 1 "$report"; then
+              echo "::endgroup::"
+              echo "::error::$IMAGE — vulnerabilities found at severity $SEVERITY. See the trivy-image artifacts."
+              failed=1
+              continue
+            fi
             echo "::endgroup::"
-            echo "::error::$IMAGE — vulnerabilities found at severity $SEVERITY. See the trivy-image.json artifact."
-            exit 1
-          fi
-          echo "::endgroup::"
-          echo "No $SEVERITY vulnerabilities in the scanned image."
+            echo "No $SEVERITY vulnerabilities in $IMAGE."
+          done
+
+          exit "$failed"
 
       - name: Scan go.sum (osv-scanner)
         id: osv

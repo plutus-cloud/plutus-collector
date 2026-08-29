@@ -11,16 +11,52 @@ name: Build & publish
 # first publish — `docker/build-push-action` and `helm push` don't set that themselves, and
 # there's no API for it wired into this workflow.
 #
-# workflow_dispatch added for manual republishing (e.g. after a registry hiccup) without cutting
-# a new release, same as the monorepo's build-images.yml.
+# workflow_dispatch added for manual republishing (e.g. after a registry hiccup, or to rebuild the
+# images on a patched base without cutting a release) without cutting a new release, same as the
+# monorepo's build-images.yml. Dispatched against a branch it republishes the IMAGES only — the
+# chart steps are tag-gated, see the note on them.
+#
+# ─── TAG-TRIGGERED, AND THE WORKFLOW CREATES THE RELEASE ────────────────────
+#
+# Pushing a tag and letting the workflow create the release keeps the whole artifact set — the
+# release, both images, the chart and the SBOMs — the product of one run: nothing is assembled by
+# hand, and a re-run reproduces rather than races.
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
   workflow_dispatch:
 
 jobs:
+  # Its own job purely to keep the token split below intact: this one holds `contents: write` and
+  # NO `packages` scope, so the invariant the sbom job's comment states — no single job's token
+  # can both push images and rewrite the repo — survives the move to a workflow-created release.
+  # Folding these three lines into `build` would have quietly broken it.
+  create-release:
+    name: Create the GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      # `view || create`, not a bare create: a workflow_dispatch re-run against an existing tag
+      # must republish rather than fail, which is the whole point of that trigger.
+      - name: Create it if it does not already exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh release view "$TAG" --repo "$REPOSITORY" >/dev/null 2>&1 && exit 0
+          gh release create "$TAG" --repo "$REPOSITORY" --title "$TAG" --generate-notes
+
   build:
+    # `!failure() && !cancelled()` rather than a bare `needs`, because create-release is SKIPPED
+    # on a workflow_dispatch (no tag) and a skipped dependency would otherwise skip this too —
+    # which is exactly the manual-republish case that trigger exists for.
+    needs: create-release
+    if: ${{ !failure() && !cancelled() }}
     name: Build & push to GHCR
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -35,19 +71,24 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # GITHUB_TOKEN is what authenticates this login; the username field is not verified. The
+      # org name is used so the value does not vary with whatever triggered the run.
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
-      # No extra path segment (ghcr.io/${{ github.repository }} resolves to
-      # ghcr.io/plutus-cloud/plutus-collector directly) — unlike the monorepo's images, this repo
-      # builds exactly one artifact, so repo name and image name are the same thing.
-      - name: Build & push image
+      # No extra path segment for the Kubernetes agent (ghcr.io/${{ github.repository }} resolves
+      # to ghcr.io/plutus-cloud/plutus-collector directly) — it is the repo's headline artifact,
+      # so repo name and image name are the same thing. The LiteLLM collector, added later, is a
+      # sibling image under the same org rather than a tag of this one: they are different
+      # programs with different required configuration, and sharing a tag namespace would make
+      # `:main` ambiguous.
+      - name: Build & push image (Kubernetes / OpenCost)
         id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
@@ -58,6 +99,23 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}:${{ github.ref_name }}
             ghcr.io/${{ github.repository }}:main
+
+      # `target: litellm` — the Dockerfile deliberately keeps the Kubernetes stage last so that a
+      # build with no target still produces it (see that file's stage-order note). This is the
+      # one place that must name the other stage explicitly; forgetting it here would silently
+      # publish the Kubernetes binary under the LiteLLM image name.
+      - name: Build & push image (LiteLLM)
+        id: build_litellm
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: ./Dockerfile
+          target: litellm
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/plutus-litellm-collector:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/plutus-litellm-collector:main
 
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
@@ -72,12 +130,21 @@ jobs:
           IMAGE_DIGEST: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
         run: cosign sign --yes "$IMAGE_DIGEST"
 
+      # Signed on the same terms as the agent above, and for the same reason: this one also runs
+      # inside a customer's network holding an admin credential, so it is exactly as much of a
+      # trust question. An unsigned second image would quietly weaken the guarantee the first
+      # one's signature is making.
+      - name: Sign image (LiteLLM) (cosign, keyless)
+        env:
+          IMAGE_DIGEST: ghcr.io/${{ github.repository_owner }}/plutus-litellm-collector@${{ steps.build_litellm.outputs.digest }}
+        run: cosign sign --yes "$IMAGE_DIGEST"
+
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
         with:
           version: v3.16.4
 
       - name: Log Helm into GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.repository_owner }} --password-stdin
 
       # --version/--app-version pass the release tag straight through (e.g. "v0.1.0") rather than
       # Chart.yaml's own committed "0.1.0" placeholder — Helm's semver library accepts a leading
@@ -87,7 +154,13 @@ jobs:
       # succeeding against opencost.github.io at install time. Pushed under a `charts/`
       # sub-segment so the chart's OCI package doesn't collide with the image's own package at
       # the bare repo path above.
+      # Tag refs only: a chart version must be valid semver, and `github.ref_name` on a
+      # workflow_dispatch against a branch is a branch name. Images can be usefully republished
+      # from a branch (to pick up a patched base, say); a chart is a versioned artifact and is
+      # only ever published from a tag. Skipped rather than fatal so the image republish still
+      # completes.
       - name: Package & push Helm chart
+        if: startsWith(github.ref, 'refs/tags/v')
         working-directory: ./chart
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -100,6 +173,7 @@ jobs:
       # chart's tag reference resolves and signs the pushed chart's digest the same way as the
       # image above.
       - name: Sign Helm chart (cosign, keyless)
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: cosign sign --yes "ghcr.io/plutus-cloud/charts/plutus-collector:$RELEASE_TAG"
@@ -107,9 +181,10 @@ jobs:
   # A CycloneDX SBOM for the image, attached to the GitHub Release — same reasoning as the
   # monorepo's build-images.yml: this component runs inside a customer's own infrastructure, so
   # its dependency inventory matters at least as much as anything Plutus runs for itself.
-  # Separate job so no single job's token can both push images and rewrite the repo (`sbom` here
-  # holds `packages: read` + `contents: write`, `build` above holds `packages: write` +
-  # `contents: read` — never both at once).
+  # Separate job so no single job's token can both push images and rewrite the repo. Across all
+  # three: `create-release` holds `contents: write` and no packages scope, `build` holds
+  # `packages: write` + `contents: read`, `sbom` here holds `packages: read` + `contents: write`.
+  # Never both at once, in any of them.
   sbom:
     name: SBOM (CycloneDX)
     needs: build
@@ -124,7 +199,7 @@ jobs:
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # anchore/sbom-action does NOT create its output file's parent directory itself — confirmed
@@ -141,11 +216,24 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
+      # A second SBOM rather than reusing the first. The two images share a runtime base and a Go
+      # toolchain, so their contents are near-identical — but "near-identical" is an assumption,
+      # and an SBOM whose whole purpose is to state what shipped should not rest on one. The
+      # upload step below globs sbom/, so it needs no change.
+      - name: SBOM (LiteLLM)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/plutus-litellm-collector:${{ github.ref_name }}
+          format: cyclonedx-json
+          output-file: sbom/plutus-litellm-collector-${{ github.ref_name }}.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
       - name: Attach SBOM to the release
-        if: github.event.release.tag_name != ''
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.ref_name }}
           REPOSITORY: ${{ github.repository }}
         run: |
           gh release upload "$RELEASE_TAG" sbom/*.cdx.json \

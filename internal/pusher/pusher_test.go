@@ -10,43 +10,54 @@ import (
 
 	"github.com/plutus-cloud/plutus-collector/internal/ingest"
 	"github.com/plutus-cloud/plutus-collector/internal/metrics"
-	"github.com/plutus-cloud/plutus-collector/internal/opencost"
 )
 
-type fakeSource struct {
-	rows []opencost.Row
-	err  error
+// testPayload stands in for whatever a real source produces. The pusher's subject is the retry
+// and failure policy, not the data — these tests were written against a Kubernetes batch and are
+// deliberately source-agnostic now, so they keep testing the policy when a third source arrives.
+type testPayload struct {
+	Rows int
 }
 
-func (f *fakeSource) ComputeAllocation(ctx context.Context, start, end time.Time) ([]opencost.Row, error) {
-	return f.rows, f.err
+type fakeSource struct {
+	payload  any
+	rowCount int
+	err      error
+}
+
+func (f *fakeSource) Name() string { return "FakeSource" }
+
+func (f *fakeSource) Collect(ctx context.Context, start, end time.Time, dateKey string) (any, int, error) {
+	return f.payload, f.rowCount, f.err
+}
+
+func oneRowSource() *fakeSource {
+	return &fakeSource{payload: testPayload{Rows: 1}, rowCount: 1}
 }
 
 // fakePusher fails with a RetryableError `failUntil` times before succeeding, so tests can
 // assert the retry/backoff loop actually retries and eventually gives up or succeeds.
 type fakePusher struct {
-	failUntil int
-	calls     int
-	lastBatch ingest.Batch
+	failUntil   int
+	calls       int
+	lastPayload any
 }
 
-func (f *fakePusher) Push(ctx context.Context, batch ingest.Batch) (*ingest.Response, error) {
+func (f *fakePusher) Push(ctx context.Context, payload any) (*ingest.Response, error) {
 	f.calls++
-	f.lastBatch = batch
+	f.lastPayload = payload
 	if f.calls <= f.failUntil {
 		return nil, &ingest.RetryableError{Err: errors.New("simulated network failure")}
 	}
-	return &ingest.Response{Accepted: len(batch.Rows)}, nil
+	return &ingest.Response{Accepted: 1}, nil
 }
 
 func silentLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-func newTestPusher(source AllocationSource, ip BatchPusher) *Pusher {
+func newTestPusher(source Source, ip BatchPusher) *Pusher {
 	p := New(source, ip, metrics.NewState(), Config{
-		ClusterName:    "test-cluster",
-		Currency:       "USD",
 		PushInterval:   time.Hour,
 		MaxRetries:     3,
 		RetryBaseDelay: time.Millisecond, // fast in tests
@@ -56,31 +67,22 @@ func newTestPusher(source AllocationSource, ip BatchPusher) *Pusher {
 }
 
 func TestTick_SucceedsOnFirstAttempt(t *testing.T) {
-	source := &fakeSource{rows: []opencost.Row{
-		{Namespace: "checkout", Cluster: "prod-1", TotalCost: 5.0, HasTotalCost: true},
-	}}
 	fp := &fakePusher{failUntil: 0}
-	p := newTestPusher(source, fp)
+	p := newTestPusher(oneRowSource(), fp)
 
 	p.tick(context.Background())
 
 	if fp.calls != 1 {
 		t.Errorf("expected exactly 1 push call, got %d", fp.calls)
 	}
-	if len(fp.lastBatch.Rows) != 1 {
-		t.Errorf("expected 1 row in pushed batch, got %d", len(fp.lastBatch.Rows))
-	}
-	if fp.lastBatch.Currency != "USD" || fp.lastBatch.ClusterName != "test-cluster" {
-		t.Errorf("unexpected batch header: %+v", fp.lastBatch)
+	if fp.lastPayload != (testPayload{Rows: 1}) {
+		t.Errorf("pusher altered the source's payload: %+v", fp.lastPayload)
 	}
 }
 
 func TestTick_RetriesOnFailureThenSucceeds(t *testing.T) {
-	source := &fakeSource{rows: []opencost.Row{
-		{Namespace: "checkout", Cluster: "prod-1", TotalCost: 5.0, HasTotalCost: true},
-	}}
 	fp := &fakePusher{failUntil: 2} // fails twice, succeeds on 3rd call
-	p := newTestPusher(source, fp)
+	p := newTestPusher(oneRowSource(), fp)
 
 	p.tick(context.Background())
 
@@ -90,11 +92,8 @@ func TestTick_RetriesOnFailureThenSucceeds(t *testing.T) {
 }
 
 func TestTick_GivesUpAfterMaxRetriesAndDoesNotPanic(t *testing.T) {
-	source := &fakeSource{rows: []opencost.Row{
-		{Namespace: "checkout", Cluster: "prod-1", TotalCost: 5.0, HasTotalCost: true},
-	}}
 	fp := &fakePusher{failUntil: 999} // always fails
-	p := newTestPusher(source, fp)
+	p := newTestPusher(oneRowSource(), fp)
 
 	p.tick(context.Background()) // must not panic or crash the process
 
@@ -104,24 +103,45 @@ func TestTick_GivesUpAfterMaxRetriesAndDoesNotPanic(t *testing.T) {
 	}
 }
 
-func TestTick_OpenCostFailureDoesNotPanic(t *testing.T) {
-	source := &fakeSource{err: errors.New("opencost unreachable")}
+func TestTick_SourceFailureDoesNotPanic(t *testing.T) {
 	fp := &fakePusher{}
-	p := newTestPusher(source, fp)
+	p := newTestPusher(&fakeSource{err: errors.New("source unreachable")}, fp)
 
 	p.tick(context.Background()) // must not panic
 
 	if fp.calls != 0 {
-		t.Errorf("expected no push attempt when OpenCost query fails, got %d calls", fp.calls)
+		t.Errorf("expected no push attempt when the source query fails, got %d calls", fp.calls)
+	}
+}
+
+// An empty result is a real, non-error outcome — a gateway with no traffic yesterday, or a
+// cluster whose rows were all zero-cost. It must not become an empty push: the backend's ingest
+// routes delete the day's window before inserting, so pushing nothing would turn "no new data"
+// into "delete what you already have".
+func TestTick_EmptyResultIsNotPushed(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		source *fakeSource
+	}{
+		{"nil payload", &fakeSource{payload: nil, rowCount: 0}},
+		{"zero rows", &fakeSource{payload: testPayload{}, rowCount: 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fp := &fakePusher{}
+			p := newTestPusher(tc.source, fp)
+
+			p.tick(context.Background())
+
+			if fp.calls != 0 {
+				t.Errorf("expected no push for an empty result, got %d calls", fp.calls)
+			}
+		})
 	}
 }
 
 func TestTick_NonRetryableErrorStopsImmediately(t *testing.T) {
-	source := &fakeSource{rows: []opencost.Row{
-		{Namespace: "checkout", Cluster: "prod-1", TotalCost: 5.0, HasTotalCost: true},
-	}}
 	np := &nonRetryablePusher{}
-	p := newTestPusher(source, np)
+	p := newTestPusher(oneRowSource(), np)
 
 	p.tick(context.Background())
 
@@ -131,9 +151,8 @@ func TestTick_NonRetryableErrorStopsImmediately(t *testing.T) {
 }
 
 func TestPushWithRetry_CancelledContextInterruptsBackoffSleepPromptly(t *testing.T) {
-	source := &fakeSource{}
 	fp := &fakePusher{failUntil: 999} // always fails, so a retry/backoff is scheduled
-	p := newTestPusher(source, fp)
+	p := newTestPusher(&fakeSource{}, fp)
 	p.Config.RetryBaseDelay = time.Hour // would block far longer than the test timeout if not interrupted
 	p.Sleep = time.Sleep                // use the real, blocking Sleep to prove interruption works
 
@@ -141,7 +160,7 @@ func TestPushWithRetry_CancelledContextInterruptsBackoffSleepPromptly(t *testing
 
 	done := make(chan struct{})
 	go func() {
-		_, err := p.pushWithRetry(ctx, ingest.Batch{})
+		_, err := p.pushWithRetry(ctx, testPayload{})
 		if !errors.Is(err, context.Canceled) {
 			t.Errorf("expected context.Canceled, got %v", err)
 		}
@@ -162,7 +181,7 @@ func TestPushWithRetry_CancelledContextInterruptsBackoffSleepPromptly(t *testing
 
 type nonRetryablePusher struct{ calls int }
 
-func (n *nonRetryablePusher) Push(ctx context.Context, batch ingest.Batch) (*ingest.Response, error) {
+func (n *nonRetryablePusher) Push(ctx context.Context, payload any) (*ingest.Response, error) {
 	n.calls++
 	return nil, errors.New("401 unauthorized: bad api key")
 }
