@@ -200,14 +200,19 @@ docker run -d --name plutus-litellm-collector \
   -e PLUTUS_API_KEY=<the key from the Plutus UI> \
   -e LITELLM_BASE_URL=http://litellm:4000 \
   -e LITELLM_MASTER_KEY=<a LiteLLM key with admin scope> \
-  ghcr.io/plutus-cloud/plutus-litellm-collector:latest
+  ghcr.io/plutus-cloud/plutus-litellm-collector:main
 ```
+
+`:main` is this repo's "latest published release" tag — release.yml pushes it alongside the
+version tag on every release, and it is the tag the nightly vulnerability scan actually scans.
+There is deliberately no `:latest`. For production, pin the version tag (`:v1.2.3`) and verify
+its signature; see [SECURITY.md](SECURITY.md).
 
 Docker Compose, as a service alongside an existing LiteLLM:
 
 ```yaml
   plutus-litellm-collector:
-    image: ghcr.io/plutus-cloud/plutus-litellm-collector:latest
+    image: ghcr.io/plutus-cloud/plutus-litellm-collector:main
     restart: unless-stopped
     environment:
       PLUTUS_API_KEY: ${PLUTUS_API_KEY}
