@@ -413,6 +413,9 @@ LiteLLM:
 Questions or issues installing or running this agent: [contact Plutus support](https://plutus-cloud.com)
 or open an issue in this repo.
 
+**Security issues go to `security@plutus-cloud.com`, not a public issue** — see
+[SECURITY.md](SECURITY.md), which also covers how to verify the signatures on what you install.
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).

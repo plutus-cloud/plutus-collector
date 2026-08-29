@@ -13,14 +13,48 @@ name: Build & publish
 #
 # workflow_dispatch added for manual republishing (e.g. after a registry hiccup) without cutting
 # a new release, same as the monorepo's build-images.yml.
+#
+# ─── TAG-TRIGGERED, AND THE WORKFLOW CREATES THE RELEASE ────────────────────
+#
+# Pushing a tag and letting the workflow create the release keeps the whole artifact set — the
+# release, both images, the chart and the SBOMs — the product of one run: nothing is assembled by
+# hand, and a re-run reproduces rather than races.
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
   workflow_dispatch:
 
 jobs:
+  # Its own job purely to keep the token split below intact: this one holds `contents: write` and
+  # NO `packages` scope, so the invariant the sbom job's comment states — no single job's token
+  # can both push images and rewrite the repo — survives the move to a workflow-created release.
+  # Folding these three lines into `build` would have quietly broken it.
+  create-release:
+    name: Create the GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      # `view || create`, not a bare create: a workflow_dispatch re-run against an existing tag
+      # must republish rather than fail, which is the whole point of that trigger.
+      - name: Create it if it does not already exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh release view "$TAG" --repo "$REPOSITORY" >/dev/null 2>&1 && exit 0
+          gh release create "$TAG" --repo "$REPOSITORY" --title "$TAG" --generate-notes
+
   build:
+    # `!failure() && !cancelled()` rather than a bare `needs`, because create-release is SKIPPED
+    # on a workflow_dispatch (no tag) and a skipped dependency would otherwise skip this too —
+    # which is exactly the manual-republish case that trigger exists for.
+    needs: create-release
+    if: ${{ !failure() && !cancelled() }}
     name: Build & push to GHCR
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -138,9 +172,10 @@ jobs:
   # A CycloneDX SBOM for the image, attached to the GitHub Release — same reasoning as the
   # monorepo's build-images.yml: this component runs inside a customer's own infrastructure, so
   # its dependency inventory matters at least as much as anything Plutus runs for itself.
-  # Separate job so no single job's token can both push images and rewrite the repo (`sbom` here
-  # holds `packages: read` + `contents: write`, `build` above holds `packages: write` +
-  # `contents: read` — never both at once).
+  # Separate job so no single job's token can both push images and rewrite the repo. Across all
+  # three: `create-release` holds `contents: write` and no packages scope, `build` holds
+  # `packages: write` + `contents: read`, `sbom` here holds `packages: read` + `contents: write`.
+  # Never both at once, in any of them.
   sbom:
     name: SBOM (CycloneDX)
     needs: build
@@ -186,10 +221,10 @@ jobs:
           upload-release-assets: false
 
       - name: Attach SBOM to the release
-        if: github.event.release.tag_name != ''
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.ref_name }}
           REPOSITORY: ${{ github.repository }}
         run: |
           gh release upload "$RELEASE_TAG" sbom/*.cdx.json \
