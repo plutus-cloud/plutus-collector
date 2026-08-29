@@ -11,8 +11,10 @@ name: Build & publish
 # first publish — `docker/build-push-action` and `helm push` don't set that themselves, and
 # there's no API for it wired into this workflow.
 #
-# workflow_dispatch added for manual republishing (e.g. after a registry hiccup) without cutting
-# a new release, same as the monorepo's build-images.yml.
+# workflow_dispatch added for manual republishing (e.g. after a registry hiccup, or to rebuild the
+# images on a patched base without cutting a release) without cutting a new release, same as the
+# monorepo's build-images.yml. Dispatched against a branch it republishes the IMAGES only — the
+# chart steps are tag-gated, see the note on them.
 #
 # ─── TAG-TRIGGERED, AND THE WORKFLOW CREATES THE RELEASE ────────────────────
 #
@@ -152,7 +154,13 @@ jobs:
       # succeeding against opencost.github.io at install time. Pushed under a `charts/`
       # sub-segment so the chart's OCI package doesn't collide with the image's own package at
       # the bare repo path above.
+      # Tag refs only: a chart version must be valid semver, and `github.ref_name` on a
+      # workflow_dispatch against a branch is a branch name. Images can be usefully republished
+      # from a branch (to pick up a patched base, say); a chart is a versioned artifact and is
+      # only ever published from a tag. Skipped rather than fatal so the image republish still
+      # completes.
       - name: Package & push Helm chart
+        if: startsWith(github.ref, 'refs/tags/v')
         working-directory: ./chart
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -165,6 +173,7 @@ jobs:
       # chart's tag reference resolves and signs the pushed chart's digest the same way as the
       # image above.
       - name: Sign Helm chart (cosign, keyless)
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: cosign sign --yes "ghcr.io/plutus-cloud/charts/plutus-collector:$RELEASE_TAG"
