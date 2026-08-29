@@ -146,3 +146,25 @@ func TestSource_ReturnsBatchAndRowCount(t *testing.T) {
 		t.Errorf("expected a Batch payload, got %T", payload)
 	}
 }
+
+// `model` is provider-qualified on a real record ("anthropic/claude-3-5-sonnet-20240620") and
+// duplicates the provider dimension; `model_group` is the name the customer's own callers use.
+func TestModelName_PrefersTheModelGroup(t *testing.T) {
+	e := LogEntry{Model: "anthropic/claude-3-5-sonnet-20240620", ModelGroup: "claude-sonnet"}
+	if got := e.ModelName(); got != "claude-sonnet" {
+		t.Errorf("expected the group alias, got %q", got)
+	}
+	bare := LogEntry{Model: "openai/gpt-4o"}
+	if got := bare.ModelName(); got != "openai/gpt-4o" {
+		t.Errorf("expected a fallback to model, got %q", got)
+	}
+}
+
+// user_api_key_team_alias sits right beside the key alias in metadata and is the wrong answer:
+// labelling a key with its team's name collapses every key on that team into one identity row.
+func TestKeyAlias_DoesNotFallBackToTheTeamAlias(t *testing.T) {
+	e := LogEntry{APIKey: "sk-hash-abc", Metadata: map[string]any{"user_api_key_team_alias": "platform"}}
+	if got := e.KeyAlias(); got != "sk-hash-abc" {
+		t.Errorf("expected the key hash, got %q", got)
+	}
+}
