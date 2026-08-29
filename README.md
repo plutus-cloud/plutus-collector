@@ -182,8 +182,9 @@ it. Your gateway knows.
   records when it is configured with a database; a proxy running without one serves traffic
   perfectly well and has nothing for this collector to read. If your first push reports zero
   rows, check this first.
-- A LiteLLM key with **admin scope**. An ordinary virtual key authenticates fine for inference
-  and returns `401` on every admin route, which is the single most common misconfiguration here.
+- A LiteLLM key with **admin scope** — the master key, or a key created with admin permissions.
+  An ordinary virtual key authenticates fine for inference and returns `401` on every admin
+  route, which is the most common misconfiguration here.
 - Somewhere to run a container that can reach the proxy over your own network. That is usually
   the same host or cluster the proxy runs on — it does **not** need to be reachable from the
   internet.
@@ -280,17 +281,17 @@ connector still shows per-team and per-key usage in Plutus.
 |---|---|
 | `LiteLLM rejected the master key with HTTP 401/403` | `LITELLM_MASTER_KEY` is an ordinary virtual key. Admin scope is required for `/spend/logs`. |
 | Push succeeds, `row_count` is 0 every day | The proxy is not persisting spend logs — see Prerequisites — or genuinely had no traffic in the window. |
+| Model names look like `openai/gpt-4o` | The proxy reported no `model_group` for those calls, so the provider-qualified target is used as a fallback. |
 | Rows appear in Plutus but spend is $0 | Providers are still awaiting a decision. See the section above. |
 | Spend shows under a provider named `unknown` | The proxy's records carried no provider field. Decide about it like any other provider; the spend is real. |
 | `PLUTUS_INGEST_URL must use https` at startup | It carries a Bearer key and is never allowed in cleartext. |
 
 ### Status
 
-**The LiteLLM admin API this reads has not yet been verified against a live instance.** Unlike
-the OpenCost client — checked against OpenCost's published `swagger.json` — the field names in
-`internal/litellm/client.go` are read optimistically from LiteLLM's documentation, and that
-file's header lists exactly what still needs confirming. Expect to hit issues; please report
-them.
+Verified against a running LiteLLM proxy and the OpenAPI document it serves — see
+`internal/litellm/client.go`'s header for what that check found and corrected. It has not yet run
+against a production gateway with a large history, so if paging or a field behaves differently at
+volume, please report it.
 
 ## Both collectors
 

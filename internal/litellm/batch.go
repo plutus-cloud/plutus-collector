@@ -57,7 +57,7 @@ func Aggregate(dateKey string, entries []LogEntry) []Row {
 			continue
 		}
 		k := key{
-			model:      e.Model,
+			model:      e.ModelName(),
 			provider:   e.CustomLLMProvider,
 			virtualKey: e.KeyAlias(),
 			team:       e.TeamAlias(),

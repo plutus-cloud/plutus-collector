@@ -1,25 +1,36 @@
 // Package litellm is a thin client for a self-hosted LiteLLM proxy's admin spend API.
 //
-// ─── ⚠ UNVERIFIED AGAINST A LIVE INSTANCE ───────────────────────────────────
+// ─── VERIFIED against a live proxy and its own /openapi.json ────────────────
 //
-// Unlike internal/opencost — whose header records being checked against OpenCost's published
-// swagger.json, and the real bug that check caught — this client has NOT been validated against
-// a running LiteLLM or its OpenAPI document. Every field below is read optimistically (pointers
-// and `omitempty`-tolerant decoding, missing values degrading to empty rather than failing the
-// parse), and the whole file is deliberately isolated so a correction touches nothing else.
+// Checked against a running LiteLLM (ghcr.io/berriai/litellm:main-latest) with a Postgres
+// spend store, and against the OpenAPI document that instance serves. Two things that check
+// caught, both of which would have shipped silently:
 //
-// Confirm before flipping the backend's cost source to is_live:
-//   - that GET /spend/logs accepts start_date/end_date as YYYY-MM-DD and paginates as assumed;
-//   - the JSON spelling of the provider field (assumed `custom_llm_provider`);
-//   - where a virtual key's human-readable alias lives (several candidates are tried below);
-//   - whether `team_id` or a team alias is the more useful team identity.
+//   - **The endpoint is /spend/logs/v2, not /spend/logs.** Plain /spend/logs defaults to
+//     `summarize=true` and returns a per-day ROLLUP — an object keyed by hashed api-key with
+//     `models`/`spend`/`users`, carrying none of the per-request fields below. It also has no
+//     `page`/`page_size` parameters at all, so paging it is silently ignored: a first page under
+//     the page size terminates by luck, and a busy proxy would have looped re-reading the same
+//     rows. /spend/logs/v2 is the paginated route, and returns a real envelope.
+//   - **`model` is provider-qualified** ("anthropic/claude-3-5-sonnet-20240620"), duplicating
+//     `custom_llm_provider` and reading badly in a cost breakdown. `model_group` is the alias the
+//     customer's own engineers request ("claude-sonnet"), which is the name worth showing.
 //
-// ─── WHY /spend/logs AND NOT /user/daily/activity ───────────────────────────
+// Everything else the field mapping assumed was correct: `custom_llm_provider`,
+// `metadata.user_api_key_alias`, `metadata.user_api_key_team_alias`, `spend`, `prompt_tokens`,
+// `completion_tokens` and `team_id` are all present and populated as expected.
 //
-// LiteLLM also exposes pre-aggregated daily endpoints, and reading one of those would be less
-// work and less data. They were rejected for a specific reason worth recording, because it is
-// not obvious: their breakdowns are **per dimension, side by side** — spend by model, spend by
-// provider, spend by key — and not the cross-product.
+// Fields are still read optimistically — missing values degrade to empty rather than failing the
+// parse — because this is a fast-moving upstream and a schema change should cost a dimension,
+// not the day's data.
+//
+// ─── WHY REQUEST LOGS AND NOT /*/daily/activity ─────────────────────────────
+//
+// LiteLLM exposes several pre-aggregated daily endpoints (/team/daily/activity,
+// /customer/daily/activity, /tag/daily/activity, /global/spend/report), and reading one would be
+// less work and less data. They were rejected for a specific reason worth recording, because it
+// is not obvious: each aggregates along ONE dimension — spend by team, or by customer, or by tag
+// — and not the cross-product.
 //
 // Plutus's ingest contract wants a TUPLE per row (model × provider × key × team), because the
 // backend writes one row into four grains from it and every grain must sum to the same total.
@@ -46,12 +57,11 @@ import (
 
 // MaxPages bounds the pagination loop. A runaway guard, not a tuning knob: a busy gateway can
 // legitimately produce a lot of request logs in a day, but an unbounded loop against a
-// misbehaving or misconfigured endpoint would spin forever inside one tick and never push
-// anything at all — the failure mode being avoided is silence, not slowness.
+// misbehaving endpoint would spin forever inside one tick and never push anything at all — the
+// failure mode being avoided is silence, not slowness.
 const MaxPages = 200
 
-// PageSize is requested per page. LiteLLM may cap or ignore it; the loop terminates on a short
-// or empty page either way.
+// PageSize is requested per page.
 const PageSize = 1000
 
 type Client struct {
@@ -70,8 +80,12 @@ func New(baseURL, masterKey string, httpClient *http.Client) *Client {
 // with that dimension empty — which the backend already handles by bucketing it under a named
 // "Unattributed" sentinel — rather than a failed parse that would lose the whole day.
 type LogEntry struct {
-	Spend             float64        `json:"spend"`
+	Spend float64 `json:"spend"`
+
+	// Model is provider-qualified ("openai/gpt-4o"); ModelGroup is the alias the customer's own
+	// callers use ("gpt-4o"). ModelName() prefers the latter — see there.
 	Model             string         `json:"model"`
+	ModelGroup        string         `json:"model_group"`
 	CustomLLMProvider string         `json:"custom_llm_provider"`
 	APIKey            string         `json:"api_key"`
 	TeamID            string         `json:"team_id"`
@@ -81,17 +95,30 @@ type LogEntry struct {
 	Metadata          map[string]any `json:"metadata"`
 }
 
-// KeyAlias returns the most human-readable identifier available for the virtual key that made
-// the request, falling back to the key hash.
+// ModelName is what the model dimension should show.
 //
-// A hash is a poor thing to show a customer in a cost breakdown, but it is a stable identity and
-// showing it beats attributing the spend to nobody. The candidate metadata keys are tried in
-// descending order of readability.
+// `model_group` is the name the customer configured and their own callers request; `model` is
+// LiteLLM's provider-qualified target ("anthropic/claude-3-5-sonnet-20240620"). The qualified
+// form duplicates the provider dimension and is not what anyone asked for, so the group wins
+// where present.
+func (e LogEntry) ModelName() string {
+	if e.ModelGroup != "" {
+		return e.ModelGroup
+	}
+	return e.Model
+}
+
+// KeyAlias returns the most human-readable identifier for the virtual key that made the request,
+// falling back to the key hash.
+//
+// A hash is a poor thing to show in a cost breakdown, but it is a stable identity and beats
+// attributing the spend to nobody. It falls back straight to the hash and NOT to any other
+// metadata field: `user_api_key_team_alias` in particular sits right beside the alias and is the
+// wrong answer — labelling a key with its team's name silently collapses every key on that team
+// into one row in the identity breakdown.
 func (e LogEntry) KeyAlias() string {
-	for _, k := range []string{"user_api_key_alias", "user_api_key_team_alias", "user_api_key_user_id"} {
-		if v, ok := e.Metadata[k].(string); ok && v != "" {
-			return v
-		}
+	if v, ok := e.Metadata["user_api_key_alias"].(string); ok && v != "" {
+		return v
 	}
 	return e.APIKey
 }
@@ -104,11 +131,13 @@ func (e LogEntry) TeamAlias() string {
 	return e.TeamID
 }
 
-// spendLogsResponse tolerates both a bare array and an object wrapping one, because which of
-// the two a given LiteLLM version returns is among the things this client has not been able to
-// verify. Guessing one and being wrong would fail every parse; accepting both costs a few lines.
+// spendLogsResponse is /spend/logs/v2's envelope. TotalPages is what terminates the loop; a
+// short page is not a reliable signal on its own, since the page size may be capped server-side.
+// `page` is deliberately not decoded: the loop counts its own pages, so parsing a field it never
+// reads adds nothing and one more way for a response to fail to unmarshal.
 type spendLogsResponse struct {
-	Data []LogEntry `json:"data"`
+	Data       []LogEntry `json:"data"`
+	TotalPages int        `json:"total_pages"`
 }
 
 // FetchSpendLogs returns every spend-log entry in [start, end), paging until the endpoint runs
@@ -116,16 +145,16 @@ type spendLogsResponse struct {
 func (c *Client) FetchSpendLogs(ctx context.Context, start, end time.Time) ([]LogEntry, error) {
 	var all []LogEntry
 
-	for page := 0; page < MaxPages; page++ {
-		entries, err := c.fetchPage(ctx, start, end, page)
+	for page := 1; page <= MaxPages; page++ {
+		resp, err := c.fetchPage(ctx, start, end, page)
 		if err != nil {
 			return nil, err
 		}
-		all = append(all, entries...)
-		// A short page is the last page. An empty one terminates too, which also covers an
-		// endpoint that ignores pagination entirely and returns the same full set every time —
-		// without this the loop would otherwise run all MaxPages iterations duplicating it.
-		if len(entries) < PageSize {
+		all = append(all, resp.Data...)
+		// TotalPages is authoritative. The belt-and-braces empty-page check guards the case where
+		// it comes back as 0 or absent, which would otherwise run the loop to MaxPages
+		// re-reading the same rows.
+		if len(resp.Data) == 0 || page >= resp.TotalPages {
 			break
 		}
 	}
@@ -133,16 +162,16 @@ func (c *Client) FetchSpendLogs(ctx context.Context, start, end time.Time) ([]Lo
 	return all, nil
 }
 
-func (c *Client) fetchPage(ctx context.Context, start, end time.Time, page int) ([]LogEntry, error) {
+func (c *Client) fetchPage(ctx context.Context, start, end time.Time, page int) (*spendLogsResponse, error) {
 	u, err := url.Parse(c.BaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parsing LiteLLM base URL %q: %w", c.BaseURL, err)
 	}
-	u.Path = "/spend/logs"
+	u.Path = "/spend/logs/v2"
 	q := u.Query()
 	q.Set("start_date", start.UTC().Format("2006-01-02"))
 	q.Set("end_date", end.UTC().Format("2006-01-02"))
-	q.Set("page", strconv.Itoa(page+1))
+	q.Set("page", strconv.Itoa(page))
 	q.Set("page_size", strconv.Itoa(PageSize))
 	u.RawQuery = q.Encode()
 
@@ -174,16 +203,11 @@ func (c *Client) fetchPage(ctx context.Context, start, end time.Time, page int) 
 		return nil, fmt.Errorf("LiteLLM returned HTTP %d for %s: %s", resp.StatusCode, u.Path, truncate(string(body)))
 	}
 
-	// Bare array first, since that is the documented shape; fall back to the wrapped object.
-	var entries []LogEntry
-	if err := json.Unmarshal(body, &entries); err == nil {
-		return entries, nil
-	}
-	var wrapped spendLogsResponse
-	if err := json.Unmarshal(body, &wrapped); err != nil {
+	var parsed spendLogsResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
 		return nil, fmt.Errorf("parsing LiteLLM spend logs as JSON: %w (body: %s)", err, truncate(string(body)))
 	}
-	return wrapped.Data, nil
+	return &parsed, nil
 }
 
 func truncate(s string) string {
