@@ -208,7 +208,7 @@ jobs:
       - run: mkdir -p sbom
 
       - name: SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
           format: cyclonedx-json
@@ -221,7 +221,7 @@ jobs:
       # and an SBOM whose whole purpose is to state what shipped should not rest on one. The
       # upload step below globs sbom/, so it needs no change.
       - name: SBOM (LiteLLM)
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: ghcr.io/${{ github.repository_owner }}/plutus-litellm-collector:${{ github.ref_name }}
           format: cyclonedx-json
