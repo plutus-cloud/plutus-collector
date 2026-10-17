@@ -160,12 +160,13 @@ func loadCommon(getenv func(string) string, defaultIngest string, errs *[]string
 	}
 
 	if u, err := url.Parse(c.PlutusIngestURL); err != nil || u.Host == "" {
-		*errs = append(*errs, fmt.Sprintf("PLUTUS_INGEST_URL must be a well-formed URL with a host, got %q", c.PlutusIngestURL))
+		*errs = append(*errs, "PLUTUS_INGEST_URL must be a well-formed URL with a host (value not echoed: it may contain credentials)")
+	} else if rejectUserinfo("PLUTUS_INGEST_URL", u, "the Plutus API key goes in PLUTUS_API_KEY", errs) {
 	} else if u.Scheme != "https" {
 		// PlutusIngestURL carries a Bearer API key on every request; an http:// value would
 		// send that key in cleartext, so unlike a source URL (typically an internal http://
 		// address) this scheme is not optional.
-		*errs = append(*errs, fmt.Sprintf("PLUTUS_INGEST_URL must use https (carries a Bearer API key), got %q", c.PlutusIngestURL))
+		*errs = append(*errs, fmt.Sprintf("PLUTUS_INGEST_URL must use https (carries a Bearer API key), got %q", u.Redacted()))
 	}
 
 	intervalMin := defaultPushIntervalMin
@@ -180,6 +181,21 @@ func loadCommon(getenv func(string) string, defaultIngest string, errs *[]string
 	c.PushInterval = time.Duration(intervalMin) * time.Minute
 
 	return c
+}
+
+// rejectUserinfo reports (and returns true for) a URL carrying user:password@. Credentials in a
+// URL end up in logs, error strings and proxies' access logs, so they are refused outright and
+// the message names the variable to use instead. The offending value is never echoed.
+func rejectUserinfo(name string, u *url.URL, hint string, errs *[]string) bool {
+	if u.User == nil {
+		return false
+	}
+	msg := name + " must not contain credentials (user:password@host)"
+	if hint != "" {
+		msg += "; " + hint
+	}
+	*errs = append(*errs, msg)
+	return true
 }
 
 func finish(errs []string) error {
@@ -215,8 +231,9 @@ func LoadOpenCost(getenv func(string) string) (*OpenCostConfig, error) {
 	if cfg.Currency == "" {
 		errs = append(errs, "CURRENCY is required (no default — OpenCost does not report its own currency, see docs/multi-currency.md)")
 	}
-	if u, err := url.Parse(cfg.OpenCostURL); err != nil || u.Host == "" {
-		errs = append(errs, fmt.Sprintf("OPENCOST_URL must be a well-formed URL with a host, got %q", cfg.OpenCostURL))
+	if u, err := url.Parse(cfg.OpenCostURL); err == nil && u.Host != "" && rejectUserinfo("OPENCOST_URL", u, "", &errs) {
+	} else if err != nil || u.Host == "" {
+		errs = append(errs, "OPENCOST_URL must be a well-formed URL with a host (value not echoed: it may contain credentials)")
 	}
 
 	if err := finish(errs); err != nil {
@@ -249,8 +266,9 @@ func LoadLiteLLM(getenv func(string) string) (*LiteLLMConfig, error) {
 	}
 	if cfg.LiteLLMBaseURL == "" {
 		errs = append(errs, "LITELLM_BASE_URL is required (no default — there is no conventional address for a LiteLLM proxy)")
-	} else if u, err := url.Parse(cfg.LiteLLMBaseURL); err != nil || u.Host == "" {
-		errs = append(errs, fmt.Sprintf("LITELLM_BASE_URL must be a well-formed URL with a host, got %q", cfg.LiteLLMBaseURL))
+	} else if u, err := url.Parse(cfg.LiteLLMBaseURL); err == nil && u.Host != "" && rejectUserinfo("LITELLM_BASE_URL", u, "the key goes in LITELLM_MASTER_KEY", &errs) {
+	} else if err != nil || u.Host == "" {
+		errs = append(errs, "LITELLM_BASE_URL must be a well-formed URL with a host (value not echoed: it may contain credentials)")
 	}
 
 	if err := finish(errs); err != nil {
@@ -285,8 +303,9 @@ func LoadBifrost(getenv func(string) string) (*BifrostConfig, error) {
 
 	if cfg.BifrostBaseURL == "" {
 		errs = append(errs, "BIFROST_BASE_URL is required (no default — there is no conventional address for a Bifrost gateway)")
-	} else if u, err := url.Parse(cfg.BifrostBaseURL); err != nil || u.Host == "" {
-		errs = append(errs, fmt.Sprintf("BIFROST_BASE_URL must be a well-formed URL with a host, got %q", cfg.BifrostBaseURL))
+	} else if u, err := url.Parse(cfg.BifrostBaseURL); err == nil && u.Host != "" && rejectUserinfo("BIFROST_BASE_URL", u, "use BIFROST_BASIC_USER / BIFROST_BASIC_PASSWORD, or BIFROST_API_KEY", &errs) {
+	} else if err != nil || u.Host == "" {
+		errs = append(errs, "BIFROST_BASE_URL must be a well-formed URL with a host (value not echoed: it may contain credentials)")
 	}
 	if cfg.BasicUser != "" && cfg.APIKey != "" {
 		errs = append(errs, "set either BIFROST_API_KEY or BIFROST_BASIC_USER/BIFROST_BASIC_PASSWORD, not both")

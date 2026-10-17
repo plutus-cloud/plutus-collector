@@ -47,6 +47,7 @@ package litellm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -241,7 +242,7 @@ func (c *Client) FetchSpendLogs(ctx context.Context, start, end time.Time) ([]Lo
 func (c *Client) fetchPage(ctx context.Context, start, end time.Time, page int) (*spendLogsResponse, error) {
 	u, err := url.Parse(c.BaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("parsing LiteLLM base URL %q: %w", c.BaseURL, err)
+		return nil, fmt.Errorf("parsing LiteLLM base URL: %w", errors.Unwrap(err))
 	}
 	u.Path = "/spend/logs/v2"
 	q := u.Query()

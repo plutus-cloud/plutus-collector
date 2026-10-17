@@ -320,7 +320,7 @@ func TestEndToEnd_FakeBifrostToFakePlutus(t *testing.T) {
 	plutus := fakePlutus(t, `{"accepted":2,"usage_accepted":2,"rejected":0,"errors":[],"held_providers":["bedrock"]}`, &pushes)
 	defer plutus.Close()
 
-	var logBuf bytes.Buffer
+	var logBuf syncBuf
 	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
 	src := &Source{Logs: newClient(bif, Auth{}), Logger: logger}
 	p := pusher.New(src, ingest.NewClient(plutus.URL, "plutus-key-XYZ", plutus.Client()), metrics.NewState(),
@@ -332,10 +332,9 @@ func TestEndToEnd_FakeBifrostToFakePlutus(t *testing.T) {
 	go func() { p.Run(ctx); close(done) }()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		mu.Lock()
-		n := len(pushes)
-		mu.Unlock()
-		if n > 0 {
+		// Wait for the pusher to finish handling the reply, not merely for the request to arrive:
+		// cancelling earlier would abort the in-flight response read.
+		if strings.Contains(logBuf.String(), "push succeeded") {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -431,3 +430,12 @@ func TestConfigHelpers(t *testing.T) {
 		t.Errorf("fields: %+v", f)
 	}
 }
+
+// syncBuf is a bytes.Buffer safe to read while the pusher goroutine is still logging.
+type syncBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.b.Write(p) }
+func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }

@@ -247,3 +247,56 @@ func TestLoadBifrost_RejectsBothAuthFormsAndPlainHttpIngest(t *testing.T) {
 		t.Error("expected a plain-http ingest URL to be rejected")
 	}
 }
+
+// ─── credentials in URLs ────────────────────────────────────────────────────
+
+func TestURLsWithUserinfoAreRejectedAndNeverEchoed(t *testing.T) {
+	const secret = "hunter2-SECRET"
+	base := map[string]string{"PLUTUS_API_KEY": "k"}
+	cases := map[string]func(map[string]string) (error, string){
+		"BIFROST_BASE_URL": func(e map[string]string) (error, string) {
+			e["BIFROST_BASE_URL"] = "http://admin:" + secret + "@bifrost:8080"
+			_, err := LoadBifrost(fakeEnv(e))
+			return err, "BIFROST_BASIC_USER"
+		},
+		"LITELLM_BASE_URL": func(e map[string]string) (error, string) {
+			e["LITELLM_BASE_URL"] = "http://admin:" + secret + "@litellm:4000"
+			e["LITELLM_MASTER_KEY"] = "sk"
+			_, err := LoadLiteLLM(fakeEnv(e))
+			return err, "LITELLM_MASTER_KEY"
+		},
+		"PLUTUS_INGEST_URL": func(e map[string]string) (error, string) {
+			e["BIFROST_BASE_URL"] = "http://b"
+			e["PLUTUS_INGEST_URL"] = "https://u:" + secret + "@console.plutus-cloud.com/x"
+			_, err := LoadBifrost(fakeEnv(e))
+			return err, "PLUTUS_API_KEY"
+		},
+		"OPENCOST_URL": func(e map[string]string) (error, string) {
+			e["CLUSTER_NAME"], e["CURRENCY"] = "c", "USD"
+			e["OPENCOST_URL"] = "http://u:" + secret + "@oc:9003"
+			_, err := LoadOpenCost(fakeEnv(e))
+			return err, "credentials"
+		},
+	}
+	for name, run := range cases {
+		env := map[string]string{}
+		for k, v := range base {
+			env[k] = v
+		}
+		err, hint := run(env)
+		if err == nil || !contains(err.Error(), name) || !contains(err.Error(), "credentials") || !contains(err.Error(), hint) {
+			t.Errorf("%s: expected a rejection naming the variable and %q, got %v", name, hint, err)
+			continue
+		}
+		if contains(err.Error(), secret) {
+			t.Errorf("%s: error leaked the password: %v", name, err)
+		}
+	}
+}
+
+func TestMalformedURLErrorsDoNotEchoTheValue(t *testing.T) {
+	_, err := LoadBifrost(fakeEnv(map[string]string{"PLUTUS_API_KEY": "k", "BIFROST_BASE_URL": "http://u:pw-SECRET@ho st"}))
+	if err == nil || contains(err.Error(), "pw-SECRET") {
+		t.Errorf("want an error without the value, got %v", err)
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"flag"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -50,8 +51,8 @@ func main() {
 	// The master key is deliberately absent from this line. Everything else about the
 	// configuration is worth having in a support transcript; a credential is not.
 	logger.Info("starting plutus-litellm-collector",
-		"litellm_base_url", cfg.LiteLLMBaseURL,
-		"plutus_ingest_url", cfg.PlutusIngestURL,
+		"litellm_base_url", redact(cfg.LiteLLMBaseURL),
+		"plutus_ingest_url", redact(cfg.PlutusIngestURL),
 		"push_interval", cfg.PushInterval.String(),
 		"metrics_addr", cfg.MetricsAddr,
 		"activity_tag_prefix", cfg.ActivityTagPrefix,
@@ -96,4 +97,13 @@ func main() {
 	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("error shutting down metrics server", "error", err)
 	}
+}
+
+// redact strips any password from a URL before it is logged. Config validation already refuses
+// userinfo; this is the second line of defence.
+func redact(raw string) string {
+	if u, err := url.Parse(raw); err == nil {
+		return u.Redacted()
+	}
+	return "(unparseable url)"
 }

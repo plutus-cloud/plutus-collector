@@ -391,6 +391,9 @@ for the other collectors. There is no command-line flag; everything is an enviro
 | `PUSH_INTERVAL_MINUTES` | no | `1440` |
 | `METRICS_ADDR` | no | `:9100` |
 
+Base URLs (and `PLUTUS_INGEST_URL`) may not contain `user:password@`; that is rejected at startup,
+because URLs end up in logs. Credentials go in the variables above.
+
 **Authentication is configuration because it is unconfirmed.** Bifrost's management API is the
 dashboard's own and is unauthenticated unless the operator enables auth; how a given deployment
 authenticates it was not confirmed, so the collector supports a header (any name, any scheme) or
