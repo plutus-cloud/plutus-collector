@@ -15,8 +15,10 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -33,24 +35,33 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
+	activityFlag := flag.String("activity-tag-prefix", "",
+		"enable the per-row `activity` label from request tags starting with this prefix (e.g. \"activity:\"); off when unset. Overrides ACTIVITY_TAG_PREFIX")
+	flag.Parse()
+
 	cfg, err := config.LoadLiteLLM(os.Getenv)
 	if err != nil {
 		logger.Error("startup failed", "error", err)
 		os.Exit(1)
 	}
+	if *activityFlag != "" {
+		cfg.ActivityTagPrefix = *activityFlag
+	}
 
 	// The master key is deliberately absent from this line. Everything else about the
 	// configuration is worth having in a support transcript; a credential is not.
 	logger.Info("starting plutus-litellm-collector",
-		"litellm_base_url", cfg.LiteLLMBaseURL,
-		"plutus_ingest_url", cfg.PlutusIngestURL,
+		"litellm_base_url", redact(cfg.LiteLLMBaseURL),
+		"plutus_ingest_url", redact(cfg.PlutusIngestURL),
 		"push_interval", cfg.PushInterval.String(),
 		"metrics_addr", cfg.MetricsAddr,
+		"activity_tag_prefix", cfg.ActivityTagPrefix,
 	)
 
 	httpClient := &http.Client{Timeout: cfg.HTTPTimeout}
 	source := &litellm.Source{
-		Logs: litellm.New(cfg.LiteLLMBaseURL, cfg.LiteLLMMasterKey, httpClient),
+		Logs:              litellm.New(cfg.LiteLLMBaseURL, cfg.LiteLLMMasterKey, httpClient),
+		ActivityTagPrefix: cfg.ActivityTagPrefix,
 	}
 	ingestClient := ingest.NewClient(cfg.PlutusIngestURL, cfg.PlutusAPIKey, httpClient)
 	metricsState := metrics.NewState()
@@ -86,4 +97,13 @@ func main() {
 	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("error shutting down metrics server", "error", err)
 	}
+}
+
+// redact strips any password from a URL before it is logged. Config validation already refuses
+// userinfo; this is the second line of defence.
+func redact(raw string) string {
+	if u, err := url.Parse(raw); err == nil {
+		return u.Redacted()
+	}
+	return "(unparseable url)"
 }

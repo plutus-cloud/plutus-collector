@@ -1,16 +1,17 @@
 # plutus-collector
 
 Small Go agents you run inside your own infrastructure to send cost data to
-[Plutus](https://plutus-cloud.com). Two of them, from this one repo:
+[Plutus](https://plutus-cloud.com). Three of them, from this one repo:
 
 | Binary | Reads | Pushes to |
 |---|---|---|
 | `plutus-collector` | [OpenCost](https://www.opencost.io/)'s local `/allocation` API, in your Kubernetes cluster | `POST /api/ingest/kubernetes-cost` |
 | `plutus-litellm-collector` | your self-hosted [LiteLLM](https://docs.litellm.ai/) proxy's admin spend API | `POST /api/ingest/litellm-cost` |
+| `plutus-bifrost-collector` | your self-hosted [Bifrost](https://github.com/maximhq/bifrost) gateway's `/api/logs` | `POST /api/ingest/bifrost-cost` |
 
-Both exist for the same reason: the system being measured runs **inside your network**, where
+All three exist for the same reason: the system being measured runs **inside your network**, where
 nothing of Plutus's can reach it. So the agent runs on your side and pushes out, rather than
-Plutus polling in — which is also why neither needs you to open anything inbound.
+Plutus polling in — which is also why none of them needs you to open anything inbound.
 
 Each communicates over one fixed HTTP/JSON contract with an API key you mint in Plutus — no
 access to anything else in your account beyond that one endpoint. They share this repo's
@@ -18,7 +19,7 @@ transport, retry policy and metrics (`internal/ingest`, `internal/pusher`, `inte
 and differ only in what they read and which environment variables they require.
 
 Each has its own section below; what they genuinely share — security posture, the `/metrics` and
-`/healthz` endpoints, and how to develop on them — is under "Both collectors".
+`/healthz` endpoints, and how to develop on them — is under "All collectors".
 
 ## Why a separate repo
 
@@ -41,7 +42,7 @@ like everything else in the cluster. Same shape as every comparable in-cluster a
 ## Kubernetes collector (OpenCost)
 
 Everything in this section is specific to `plutus-collector`, the Kubernetes agent. The LiteLLM
-collector has its own section below; what the two genuinely share is under "Both collectors".
+collector has its own section below; what the two genuinely share is under "All collectors".
 
 ### Prerequisites
 
@@ -269,6 +270,42 @@ breakdown add up to the same total.
 Where a record carries no virtual-key alias, the key hash is sent instead: a poor label, but a
 stable identity, and better than attributing the spend to nobody.
 
+### Optional: label spend by activity (`activity`)
+
+Off by default. When enabled, the collector reads each request's tags and, where **exactly one**
+tag starts with a prefix you choose, sends the rest of that tag as the row's `activity`, so
+Plutus can break spend down by what the calls were *for* (`code-review`, `support-triage`, ...).
+The label is whatever your own callers attached; Plutus never infers it.
+
+```bash
+# any one of these turns it on
+plutus-litellm-collector --activity-tag-prefix=activity:
+ACTIVITY_TAG_PREFIX=activity:      # same, via the environment (the flag wins if both are set)
+ACTIVITY_TAGS=true                 # on, with the conventional prefix "activity:"
+```
+
+Callers tag a request in LiteLLM the usual way, e.g. `"metadata": {"tags": ["activity:code-review"]}`.
+
+- **Zero or several matching tags: the field is omitted** for that request. The collector never
+  picks one of several and never splits spend between them.
+- `activity` is part of the daily key, so requests that differ only in activity are separate
+  rows; totals are unchanged.
+- With the flag unset, payloads are byte-identical to earlier versions (the field is not
+  serialised at all).
+- Enabling it affects future pushes only; a push replaces its day, so history is not relabelled.
+- Plutus normalises the value (lowercase, `[a-z0-9._-]`, max 64 chars), ignores values that do not
+  fit, and admits at most 50 distinct values per push; the collector logs a warning when any are
+  dropped. Spend is never dropped. Plutus shows a label only once a cost-tag rule maps it.
+
+**What is confirmed about the tag field.** LiteLLM's docs say tags are *sent* as `metadata.tags`
+(or the `x-litellm-tags` header) and *stored* in the spend log as `request_tags`, and its source
+types that field as a list on the in-memory payload and as a JSON string on the stored row. The
+collector accepts a list or a JSON-string list from `request_tags` and falls back to
+`metadata.tags`. **Not confirmed:** that `GET /spend/logs/v2` actually returns `request_tags` on
+every LiteLLM version (its documented example response omits it), because this was checked
+against docs and source, not a live proxy. If your version omits it, the flag is harmless and
+every row simply goes unlabelled.
+
 ### Spend for a provider you already track directly
 
 If you also have Plutus's OpenAI or Anthropic connector enabled, the same dollars would arrive
@@ -298,19 +335,147 @@ Verified against a running LiteLLM proxy and the OpenAPI document it serves — 
 against a production gateway with a large history, so if paging or a field behaves differently at
 volume, please report it.
 
-## Both collectors
+## Bifrost collector
+
+`plutus-bifrost-collector` reads your [Bifrost](https://github.com/maximhq/bifrost) gateway's
+request logs and pushes a daily aggregate to Plutus: spend and tokens by upstream provider, model,
+virtual key and team (or customer).
+
+> **Not yet verified against a real Bifrost.** This collector was written from Bifrost's public
+> source and docs and tested against a fake Bifrost server and a fake Plutus endpoint. It has
+> never read a live Bifrost. The route, query parameters and record field names below are what
+> Bifrost's source says; the exact token field names, the management API's authentication on your
+> deployment, and the largest page size it honours are unconfirmed. It is built to fail small
+> rather than wrong: it reads fields defensively, reports counts of anything unexpected, and every
+> field name is overridable. If you run it against a real Bifrost, a report of what differed is
+> very welcome.
+
+### Prerequisites
+
+- A Bifrost gateway **with log storage enabled** (the logs store is what `/api/logs` reads) and
+  retention long enough to still hold yesterday.
+- A container that can reach Bifrost over your own network. It does **not** need to be reachable
+  from the internet.
+- Bifrost management-API credentials **if you turned auth on** (see below).
+- A Plutus account with the Bifrost cost source added, and a push API key minted for it (an
+  account admin does this; a key minted for a different cost source is refused with `403`).
+
+### Quickstart
+
+```bash
+docker run -d --name plutus-bifrost-collector \
+  -e PLUTUS_API_KEY=<the key from the Plutus UI> \
+  -e BIFROST_BASE_URL=http://bifrost:8080 \
+  ghcr.io/plutus-cloud/plutus-bifrost-collector:main
+```
+
+As with the LiteLLM image, pin the version tag in production and verify its signature
+([SECURITY.md](SECURITY.md)). There is no Helm chart for it; on Kubernetes run it as a
+one-replica `Deployment` with the same environment variables.
+
+### Configuration reference
+
+Shared variables (`PLUTUS_INGEST_URL`, `PUSH_INTERVAL_MINUTES`, `METRICS_ADDR`) behave as they do
+for the other collectors. There is no command-line flag; everything is an environment variable.
+
+| env var | required | default |
+|---|---|---|
+| `PLUTUS_API_KEY` | **yes** | none (credential) |
+| `BIFROST_BASE_URL` | **yes** | none; `http://` allowed (internal address) |
+| `PLUTUS_INGEST_URL` | no | `https://console.plutus-cloud.com/api/ingest/bifrost-cost` (must be `https`) |
+| `BIFROST_API_KEY` | no | none; sent as `<scheme> <key>` in `BIFROST_API_KEY_HEADER` |
+| `BIFROST_API_KEY_HEADER` | no | `Authorization` |
+| `BIFROST_API_KEY_SCHEME` | no | `Bearer` for `Authorization`; none (raw value) for any other header |
+| `BIFROST_BASIC_USER` / `BIFROST_BASIC_PASSWORD` | no | none; use instead of `BIFROST_API_KEY`, not with it |
+| `BIFROST_FIELD_<NAME>` | no | built-in defaults; see below |
+| `PUSH_INTERVAL_MINUTES` | no | `1440` |
+| `METRICS_ADDR` | no | `:9100` |
+
+Base URLs (and `PLUTUS_INGEST_URL`) may not contain `user:password@`; that is rejected at startup,
+because URLs end up in logs. Credentials go in the variables above.
+
+**Authentication is configuration because it is unconfirmed.** Bifrost's management API is the
+dashboard's own and is unauthenticated unless the operator enables auth; how a given deployment
+authenticates it was not confirmed, so the collector supports a header (any name, any scheme) or
+HTTP basic auth and sends nothing at all by default. A `401/403` produces an error naming these
+variables.
+
+**Field names.** `BIFROST_FIELD_<NAME>` replaces the candidate paths for one value with a
+comma-separated list of dotted paths (first one that yields a value wins).
+`<NAME>` is one of `TIMESTAMP`, `STATUS`, `PROVIDER`, `MODEL`, `VIRTUAL_KEY`, `TEAM`, `COST`,
+`INPUT_TOKENS`, `OUTPUT_TOKENS`. Defaults:
+
+| value | candidate paths |
+|---|---|
+| timestamp / status | `timestamp` / `status` |
+| provider / model | `provider` / `model` |
+| virtual key | `virtual_key_name`, `virtual_key_id` |
+| team | `team_name`, `customer_name`, `team_id`, `customer_id` |
+| cost | `cost` |
+| input tokens | `token_usage.prompt_tokens`, `token_usage.input_tokens`, `prompt_tokens` |
+| output tokens | `token_usage.completion_tokens`, `token_usage.output_tokens`, `completion_tokens` |
+
+A Bifrost virtual key belongs to a team **or** a customer, never both; either fills the single
+`team` field Plutus has.
+
+### What it reads and sends
+
+Each cycle it asks for **yesterday (UTC)** only:
+`GET /api/logs?start_time=...&end_time=...&status=success&limit=1000&offset=N&sort_by=timestamp&order=asc`,
+paging until a short page. It reads `GET /api/logs/stats` and `GET /api/logs/dropped` as a
+cross-check only. It reduces the records in memory to one row per UTC day,
+`(provider, model, virtual key, team)`, and pushes:
+
+```json
+{"rows": [
+  {"date": "2026-10-16", "provider": "anthropic", "model": "claude-sonnet-4-5",
+   "virtual_key": "vk-checkout", "team": "platform",
+   "spend": 12.5, "input_tokens": 1000, "output_tokens": 200}
+]}
+```
+
+- **Provider ids are sent exactly as Bifrost reports them**, un-normalised; Plutus keeps a
+  per-provider decision (count it, or treat it as covered by a direct connector) and holds the
+  dollars until someone decides. The collector logs `held_providers` when Plutus reports that.
+- **Per-request data never leaves your network, and no prompt or response content is parsed or
+  retained.** Only the handful of fields above are extracted from each record; keys, prompts and
+  record content are never logged, and HTTP error bodies from Bifrost are not echoed.
+- **Cost is Bifrost's own estimate**, not an invoice, and Bifrost can recalculate history; Plutus
+  replaces the whole day on every push, so a re-push corrects it.
+- **Window safety.** Records whose timestamp falls outside the requested day (a server ignoring
+  the time filter) are skipped and counted in the log rather than pushed under the wrong date.
+- **Reconciliation, advisory only.** If the sum it built differs from Bifrost's own `total_cost`
+  for the day, or Bifrost reports dropped (unlogged) requests, it logs a warning with the numbers.
+  It never fails the push over this.
+- A day with no records (including logs already purged by Bifrost's retention) pushes nothing and
+  leaves Plutus's existing rows for that day alone.
+
+### Troubleshooting
+
+| Symptom | Cause |
+|---|---|
+| `Bifrost rejected the request ... HTTP 401/403` | Auth is enabled on the management API; set `BIFROST_API_KEY*` or `BIFROST_BASIC_*`. |
+| Every day pushes nothing | Log storage is off, retention has purged the day, or there was no traffic. |
+| Tokens are 0 but spend is not | Your Bifrost nests usage differently; set `BIFROST_FIELD_INPUT_TOKENS`/`_OUTPUT_TOKENS`. |
+| Spend is 0 for everything | The cost field is named differently; set `BIFROST_FIELD_COST`. |
+| Log: `records outside the requested day` | This Bifrost version is not honouring `start_time`/`end_time`. Report it. |
+| Rows appear in Plutus but spend is $0 | Providers are awaiting a decision in the Bifrost cost source's settings. |
+
+## All collectors
 
 ### Security & permissions
 
-Common to both: the only thing that leaves your network is the JSON batch documented above, over
-HTTPS, to the `PLUTUS_INGEST_URL` you configure. Neither collector opens a listening port beyond
+Common to all: the only thing that leaves your network is the JSON batch documented above, over
+HTTPS, to the `PLUTUS_INGEST_URL` you configure. No collector opens a listening port beyond
 its own `/metrics` and `/healthz`, and neither needs any inbound access from Plutus.
 
 The LiteLLM collector additionally holds a LiteLLM **admin-scope key** and reads request-level
 spend records, which can carry user and metadata fields. Those records are read over your own
 network and reduced to daily totals in-process — they are never written to disk and never sent
-to Plutus. Treat that key like any other admin credential; it is the most privileged thing either
-collector holds.
+to Plutus. Treat that key like any other admin credential; it is the most privileged thing the LiteLLM
+collector holds. The Bifrost collector holds whatever management-API credential you give it (often
+none) and reads request-level logs the same way: in memory, reduced in-process, never written to
+disk, never sent.
 
 Kubernetes agent specifics:
 
@@ -327,7 +492,7 @@ Kubernetes agent specifics:
   backend's idempotent ingest makes harmless but pointless, so there's nothing to autoscale.
 ### How do I verify it's working?
 
-Both collectors expose the same endpoints and emit the same metric names, on `METRICS_ADDR`
+All collectors expose the same endpoints and emit the same metric names, on `METRICS_ADDR`
 (`:9100` by default).
 
 1. **`/healthz`** — liveness/readiness, always `200 ok` once the process is up (a down
@@ -376,6 +541,7 @@ helm lint chart/
 # deliberately last, so a build with no --target still produces what it always did.
 docker build -t plutus-collector:dev .
 docker build --target litellm -t plutus-litellm-collector:dev .
+docker build --target bifrost -t plutus-bifrost-collector:dev .
 ```
 
 Conventions for commits, PR descriptions and merging are in [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -389,7 +555,7 @@ to avoid.
 
 #### Package layout
 
-Shared by both binaries:
+Shared by all binaries:
 
 - `internal/pusher` — the ticker loop, in-process retry/backoff, and the `Source` interface each
   collector implements. Its real subject is the failure policy (which errors are retryable, that
@@ -415,6 +581,13 @@ LiteLLM:
 - `cmd/plutus-litellm-collector` — entrypoint.
 - `internal/litellm` — the proxy's spend-log client, the request-log → daily-tuple aggregation,
   and the `Source` implementation.
+
+Bifrost:
+
+- `cmd/plutus-bifrost-collector` — entrypoint.
+- `internal/bifrost` — the log-API client (paging, window and status handling, defensive field
+  extraction with overridable paths), the log -> daily-tuple aggregation, reconciliation, and the
+  `Source` implementation. Tested against `httptest` fakes of both Bifrost and the Plutus endpoint.
 
 ## Support
 

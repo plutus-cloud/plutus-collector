@@ -53,6 +53,12 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 # and a second thing for it to miss, and a stale runtime base is the quiet failure mode — the
 # image still builds, the scanners still pass, and it just no longer has the fixes the other one
 # got. With a single pin the two images cannot diverge.
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -trimpath \
+    -ldflags="-s -w" \
+    -o /out/plutus-bifrost-collector \
+    ./cmd/plutus-bifrost-collector
+
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS runtime-base
 
 # ─── Two images, one Dockerfile ─────────────────────────────────────────────
@@ -76,6 +82,14 @@ COPY --from=builder /out/plutus-litellm-collector /plutus-litellm-collector
 EXPOSE 9100
 
 ENTRYPOINT ["/plutus-litellm-collector"]
+
+FROM runtime-base AS bifrost
+
+COPY --from=builder /out/plutus-bifrost-collector /plutus-bifrost-collector
+
+EXPOSE 9100
+
+ENTRYPOINT ["/plutus-bifrost-collector"]
 
 FROM runtime-base AS final
 

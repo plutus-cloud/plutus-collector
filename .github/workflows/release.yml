@@ -117,6 +117,19 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/plutus-litellm-collector:${{ github.ref_name }}
             ghcr.io/${{ github.repository_owner }}/plutus-litellm-collector:main
 
+      - name: Build & push image (Bifrost)
+        id: build_bifrost
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: ./Dockerfile
+          target: bifrost
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/plutus-bifrost-collector:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/plutus-bifrost-collector:main
+
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       # Signs the exact digest just pushed (steps.build.outputs.digest), not the mutable tag —
@@ -137,6 +150,11 @@ jobs:
       - name: Sign image (LiteLLM) (cosign, keyless)
         env:
           IMAGE_DIGEST: ghcr.io/${{ github.repository_owner }}/plutus-litellm-collector@${{ steps.build_litellm.outputs.digest }}
+        run: cosign sign --yes "$IMAGE_DIGEST"
+
+      - name: Sign image (Bifrost) (cosign, keyless)
+        env:
+          IMAGE_DIGEST: ghcr.io/${{ github.repository_owner }}/plutus-bifrost-collector@${{ steps.build_bifrost.outputs.digest }}
         run: cosign sign --yes "$IMAGE_DIGEST"
 
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
@@ -226,6 +244,15 @@ jobs:
           image: ghcr.io/${{ github.repository_owner }}/plutus-litellm-collector:${{ github.ref_name }}
           format: cyclonedx-json
           output-file: sbom/plutus-litellm-collector-${{ github.ref_name }}.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: SBOM (Bifrost)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ghcr.io/${{ github.repository_owner }}/plutus-bifrost-collector:${{ github.ref_name }}
+          format: cyclonedx-json
+          output-file: sbom/plutus-bifrost-collector-${{ github.ref_name }}.cdx.json
           upload-artifact: false
           upload-release-assets: false
 
