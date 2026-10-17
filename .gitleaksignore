@@ -1,0 +1,2 @@
+# A fake password used only to assert it is never echoed (test fixture, since reworked to be built from fragments).
+e7c1c19404905e92e5d79cbeb9466505ef00dc71:internal/config/config_test.go:generic-api-key:254
