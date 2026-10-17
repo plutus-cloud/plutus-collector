@@ -22,6 +22,11 @@ type Row struct {
 	Spend        float64 `json:"spend"`
 	InputTokens  int64   `json:"input_tokens"`
 	OutputTokens int64   `json:"output_tokens"`
+
+	// Activity is the customer's own label for what the calls were for, taken from a request tag
+	// (see LogEntry.ActivityFor). omitempty is what keeps a deployment that has not opted in
+	// byte-identical to one built before the field existed.
+	Activity string `json:"activity,omitempty"`
 }
 
 // Batch is the full POST body.
@@ -47,7 +52,15 @@ type Batch struct {
 // zero cost, and the token counts are the half that does not depend on the price map being
 // complete.
 func Aggregate(dateKey string, entries []LogEntry) []Row {
-	type key struct{ model, provider, virtualKey, team string }
+	return AggregateWithActivity(dateKey, entries, "")
+}
+
+// AggregateWithActivity is Aggregate plus the optional activity label. With an empty
+// activityPrefix it is exactly Aggregate. With one set, activity joins the tuple key, so two
+// requests differing only in activity stay separate rows (otherwise the label would be lost) and
+// spend and tokens still sum per tuple.
+func AggregateWithActivity(dateKey string, entries []LogEntry, activityPrefix string) []Row {
+	type key struct{ model, provider, virtualKey, team, activity string }
 	agg := make(map[key]*Row)
 
 	for _, e := range entries {
@@ -61,6 +74,7 @@ func Aggregate(dateKey string, entries []LogEntry) []Row {
 			provider:   e.CustomLLMProvider,
 			virtualKey: e.KeyAlias(),
 			team:       e.TeamAlias(),
+			activity:   e.ActivityFor(activityPrefix),
 		}
 		row, ok := agg[k]
 		if !ok {
@@ -70,6 +84,7 @@ func Aggregate(dateKey string, entries []LogEntry) []Row {
 				Provider:   k.provider,
 				VirtualKey: k.virtualKey,
 				Team:       k.team,
+				Activity:   k.activity,
 			}
 			agg[k] = row
 		}
@@ -113,6 +128,10 @@ type LogSource interface {
 // Source adapts LiteLLM to the pusher's Source interface.
 type Source struct {
 	Logs LogSource
+
+	// ActivityTagPrefix, when non-empty, turns on the activity label extraction. Empty (the
+	// default) sends payloads byte-identical to earlier versions.
+	ActivityTagPrefix string
 }
 
 func (s *Source) Name() string { return "LiteLLM" }
@@ -122,7 +141,7 @@ func (s *Source) Collect(ctx context.Context, start, end time.Time, dateKey stri
 	if err != nil {
 		return nil, 0, err
 	}
-	rows := Aggregate(dateKey, entries)
+	rows := AggregateWithActivity(dateKey, entries, s.ActivityTagPrefix)
 	if len(rows) == 0 {
 		// nil, not an empty Batch — the pusher treats that as "nothing to push" and skips the
 		// request, rather than sending a batch whose window-delete would remove the day's

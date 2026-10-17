@@ -157,6 +157,7 @@ jobs:
           IMAGES: >-
             ghcr.io/${{ github.repository }}:main
             ghcr.io/${{ github.repository_owner }}/plutus-litellm-collector:main
+            ghcr.io/${{ github.repository_owner }}/plutus-bifrost-collector:main
           # true on a manual dispatch with the box checked, OR on the weekly (Monday) cron —
           # the daily cron falls through to the normal HIGH,CRITICAL floor.
           FULL_AUDIT: ${{ inputs.full_security_audit == true || github.event.schedule == '0 4 * * 1' }}

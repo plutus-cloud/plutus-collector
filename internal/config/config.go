@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -93,9 +94,44 @@ type LiteLLMConfig struct {
 	// LiteLLMMasterKey authenticates against the proxy's admin routes. Required, no default —
 	// it is a credential, and an ordinary virtual key will 401 on /spend/logs.
 	LiteLLMMasterKey string
+
+	// ActivityTagPrefix enables the optional per-row `activity` label: a request tag starting
+	// with this prefix supplies it. Empty means the feature is off and payloads are unchanged.
+	// Set by --activity-tag-prefix (flag wins) or ACTIVITY_TAG_PREFIX; ACTIVITY_TAGS=true turns
+	// it on with the conventional prefix "activity:".
+	ActivityTagPrefix string
 }
 
+// DefaultActivityTagPrefix is the prefix used when the feature is enabled without naming one.
+const DefaultActivityTagPrefix = "activity:"
+
+// BifrostConfig is Common plus what the Bifrost collector needs.
+type BifrostConfig struct {
+	Common
+
+	// BifrostBaseURL is the gateway's HTTP address (the one serving /api/logs), reachable on the
+	// customer's own network. Required, no default. http:// is allowed, as for LiteLLM.
+	BifrostBaseURL string
+
+	// Management-API credentials. Bifrost's API is unauthenticated unless the operator enables
+	// auth, and how it is authenticated was not confirmed against a live instance, so every form
+	// is optional configuration: a header (APIKeyHeader: APIKeyScheme APIKey) and/or basic auth.
+	APIKey       string
+	APIKeyHeader string
+	APIKeyScheme string
+	BasicUser    string
+	BasicPass    string
+
+	// FieldOverrides maps a field name (see internal/bifrost.FieldMap) to a comma-separated list
+	// of candidate dotted paths, from BIFROST_FIELD_<NAME>. Empty means the built-in defaults.
+	FieldOverrides map[string][]string
+}
+
+// BifrostFieldNames are the overridable record fields, as the suffix of BIFROST_FIELD_<NAME>.
+var BifrostFieldNames = []string{"TIMESTAMP", "STATUS", "PROVIDER", "MODEL", "VIRTUAL_KEY", "TEAM", "COST", "INPUT_TOKENS", "OUTPUT_TOKENS"}
+
 const (
+	defaultBifrostIngestURL = "https://console.plutus-cloud.com/api/ingest/bifrost-cost"
 	defaultOpenCostURL      = "http://opencost.opencost.svc.cluster.local:9003"
 	defaultIngestURL        = "https://console.plutus-cloud.com/api/ingest/kubernetes-cost"
 	defaultLiteLLMIngestURL = "https://console.plutus-cloud.com/api/ingest/litellm-cost"
@@ -202,6 +238,11 @@ func LoadLiteLLM(getenv func(string) string) (*LiteLLMConfig, error) {
 		LiteLLMBaseURL:   getenv("LITELLM_BASE_URL"),
 		LiteLLMMasterKey: getenv("LITELLM_MASTER_KEY"),
 	}
+	if p := getenv("ACTIVITY_TAG_PREFIX"); p != "" {
+		cfg.ActivityTagPrefix = p
+	} else if v := strings.ToLower(getenv("ACTIVITY_TAGS")); v == "true" || v == "1" {
+		cfg.ActivityTagPrefix = DefaultActivityTagPrefix
+	}
 
 	if cfg.LiteLLMMasterKey == "" {
 		errs = append(errs, "LITELLM_MASTER_KEY is required (no default — it is a credential, and it must have admin scope)")
@@ -210,6 +251,56 @@ func LoadLiteLLM(getenv func(string) string) (*LiteLLMConfig, error) {
 		errs = append(errs, "LITELLM_BASE_URL is required (no default — there is no conventional address for a LiteLLM proxy)")
 	} else if u, err := url.Parse(cfg.LiteLLMBaseURL); err != nil || u.Host == "" {
 		errs = append(errs, fmt.Sprintf("LITELLM_BASE_URL must be a well-formed URL with a host, got %q", cfg.LiteLLMBaseURL))
+	}
+
+	if err := finish(errs); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// LoadBifrost reads and validates the Bifrost collector's configuration, same contract as
+// LoadOpenCost.
+func LoadBifrost(getenv func(string) string) (*BifrostConfig, error) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	var errs []string
+
+	cfg := &BifrostConfig{
+		Common:         loadCommon(getenv, defaultBifrostIngestURL, &errs),
+		BifrostBaseURL: getenv("BIFROST_BASE_URL"),
+		APIKey:         getenv("BIFROST_API_KEY"),
+		APIKeyHeader:   stringOrDefault(getenv("BIFROST_API_KEY_HEADER"), "Authorization"),
+		APIKeyScheme:   getenv("BIFROST_API_KEY_SCHEME"),
+		BasicUser:      getenv("BIFROST_BASIC_USER"),
+		BasicPass:      getenv("BIFROST_BASIC_PASSWORD"),
+		FieldOverrides: map[string][]string{},
+	}
+	// "Bearer" is the default scheme only for the Authorization header; a custom header such as
+	// X-Api-Key carries the raw value unless a scheme is set explicitly.
+	if cfg.APIKeyScheme == "" && strings.EqualFold(cfg.APIKeyHeader, "Authorization") {
+		cfg.APIKeyScheme = "Bearer"
+	}
+
+	if cfg.BifrostBaseURL == "" {
+		errs = append(errs, "BIFROST_BASE_URL is required (no default — there is no conventional address for a Bifrost gateway)")
+	} else if u, err := url.Parse(cfg.BifrostBaseURL); err != nil || u.Host == "" {
+		errs = append(errs, fmt.Sprintf("BIFROST_BASE_URL must be a well-formed URL with a host, got %q", cfg.BifrostBaseURL))
+	}
+	if cfg.BasicUser != "" && cfg.APIKey != "" {
+		errs = append(errs, "set either BIFROST_API_KEY or BIFROST_BASIC_USER/BIFROST_BASIC_PASSWORD, not both")
+	}
+	for _, name := range BifrostFieldNames {
+		if raw := getenv("BIFROST_FIELD_" + name); raw != "" {
+			var paths []string
+			for _, p := range strings.Split(raw, ",") {
+				if p = strings.TrimSpace(p); p != "" {
+					paths = append(paths, p)
+				}
+			}
+			cfg.FieldOverrides[name] = paths
+		}
 	}
 
 	if err := finish(errs); err != nil {

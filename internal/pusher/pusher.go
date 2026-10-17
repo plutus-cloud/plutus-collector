@@ -134,6 +134,14 @@ func (p *Pusher) tick(ctx context.Context) {
 	p.Metrics.RecordSuccess(rowCount, duration)
 	p.Logger.Info("push succeeded", "source", p.Source.Name(), "date", dateKey, "accepted", resp.Accepted, "rejected", resp.Rejected, "duration_seconds", duration.Seconds())
 
+	// Counts and provider ids only — nothing here is a credential or a prompt.
+	if len(resp.HeldProviders) > 0 {
+		p.Logger.Warn("spend for some providers is held awaiting a decision in Plutus (not counted yet)", "held_providers", resp.HeldProviders)
+	}
+	if a := resp.Activity; a != nil && (a.OverflowRows > 0 || a.InvalidRows > 0) {
+		p.Logger.Warn("some activity labels were not used", "invalid_rows", a.InvalidRows, "overflow_rows", a.OverflowRows, "overflow_values", a.OverflowValues, "cap", a.Cap)
+	}
+
 	// A 2xx with rejected rows is a partial failure the customer needs to see — this is their
 	// only visibility into it (design doc §1), so every error string is logged individually
 	// rather than just the count.

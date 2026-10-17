@@ -40,7 +40,7 @@ a key.
 
 ## Scope
 
-In scope: anything in this repository — both collectors, the Helm chart, the published images,
+In scope: anything in this repository — all the collectors, the Helm chart, the published images,
 and the release workflows that build and sign them.
 
 Out of scope here, but still worth reporting to the same address: the Plutus web application and
@@ -54,13 +54,17 @@ would not anticipate, that is very much in scope and we would like to know.
 
 Stated plainly, because it is what most reports turn out to be about:
 
-- **Neither collector accepts inbound connections** other than its own `/healthz` and `/metrics`
+- **No collector accepts inbound connections** other than its own `/healthz` and `/metrics`
   endpoints. Plutus never connects to it; it only makes outbound HTTPS requests.
 - **The Kubernetes agent has no Kubernetes API access** — no `ServiceAccount` RBAC of its own. It
   calls OpenCost's HTTP API and nothing else in the cluster.
 - **The LiteLLM collector reads request-level spend records** to aggregate them, in process. Those
   records are never written to disk and never leave your network; only daily per-team totals are
-  pushed. Its LiteLLM admin key is the most privileged credential either collector holds.
+  pushed. Its LiteLLM admin key is the most privileged credential any collector holds.
+- **The Bifrost collector reads request-level logs the same way** (in memory, reduced to daily
+  totals, never written to disk or sent), extracts only provider, model, virtual key, team, cost
+  and token counts from each record, and never logs credentials or record content. It holds a
+  management-API credential only if you configure one.
 - **`PLUTUS_INGEST_URL` is rejected unless it is `https://`**, because it carries a bearer token.
 
 ## Verifying what you run

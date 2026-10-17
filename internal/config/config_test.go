@@ -194,3 +194,56 @@ func contains(haystack, needle string) bool {
 		return false
 	})()
 }
+
+func TestLoadLiteLLM_ActivityPrefixIsOffByDefaultAndOptInViaEnv(t *testing.T) {
+	base := map[string]string{
+		"PLUTUS_API_KEY": "key123", "LITELLM_BASE_URL": "http://litellm:4000", "LITELLM_MASTER_KEY": "sk-master",
+	}
+	cfg, err := LoadLiteLLM(fakeEnv(base))
+	if err != nil || cfg.ActivityTagPrefix != "" {
+		t.Fatalf("expected off by default, got %q err=%v", cfg.ActivityTagPrefix, err)
+	}
+	base["ACTIVITY_TAGS"] = "true"
+	if cfg, _ = LoadLiteLLM(fakeEnv(base)); cfg.ActivityTagPrefix != "activity:" {
+		t.Errorf("ACTIVITY_TAGS=true should use the default prefix, got %q", cfg.ActivityTagPrefix)
+	}
+	base["ACTIVITY_TAG_PREFIX"] = "use-case="
+	if cfg, _ = LoadLiteLLM(fakeEnv(base)); cfg.ActivityTagPrefix != "use-case=" {
+		t.Errorf("explicit prefix should win, got %q", cfg.ActivityTagPrefix)
+	}
+}
+
+// ─── Bifrost ────────────────────────────────────────────────────────────────
+
+func TestLoadBifrost_RequiresKeyAndBaseURL(t *testing.T) {
+	_, err := LoadBifrost(fakeEnv(map[string]string{}))
+	if err == nil || !contains(err.Error(), "PLUTUS_API_KEY") || !contains(err.Error(), "BIFROST_BASE_URL") {
+		t.Fatalf("expected both to be named, got %v", err)
+	}
+}
+
+func TestLoadBifrost_DefaultsAndAuthOptional(t *testing.T) {
+	cfg, err := LoadBifrost(fakeEnv(map[string]string{"PLUTUS_API_KEY": "k", "BIFROST_BASE_URL": "http://bifrost:8080"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PlutusIngestURL != defaultBifrostIngestURL || cfg.APIKey != "" {
+		t.Errorf("unexpected defaults: %+v", cfg)
+	}
+	cfg, _ = LoadBifrost(fakeEnv(map[string]string{"PLUTUS_API_KEY": "k", "BIFROST_BASE_URL": "http://b", "BIFROST_API_KEY": "t", "BIFROST_API_KEY_HEADER": "X-Api-Key"}))
+	if cfg.APIKeyScheme != "" {
+		t.Errorf("a custom header carries the raw value, got scheme %q", cfg.APIKeyScheme)
+	}
+}
+
+func TestLoadBifrost_RejectsBothAuthFormsAndPlainHttpIngest(t *testing.T) {
+	base := map[string]string{"PLUTUS_API_KEY": "k", "BIFROST_BASE_URL": "http://b", "BIFROST_API_KEY": "t", "BIFROST_BASIC_USER": "u"}
+	if _, err := LoadBifrost(fakeEnv(base)); err == nil {
+		t.Error("expected both auth forms to be rejected")
+	}
+	delete(base, "BIFROST_BASIC_USER")
+	base["PLUTUS_INGEST_URL"] = "http://console.plutus-cloud.com/api/ingest/bifrost-cost"
+	if _, err := LoadBifrost(fakeEnv(base)); err == nil {
+		t.Error("expected a plain-http ingest URL to be rejected")
+	}
+}

@@ -52,6 +52,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -93,6 +94,81 @@ type LogEntry struct {
 	PromptTokens      int64          `json:"prompt_tokens"`
 	CompletionTokens  int64          `json:"completion_tokens"`
 	Metadata          map[string]any `json:"metadata"`
+
+	// RequestTags is LiteLLM's per-request tag list. Only read when the operator opts in to the
+	// activity label (see ActivityFor). See TagList for the shapes it tolerates.
+	RequestTags TagList `json:"request_tags"`
+}
+
+// TagList decodes LiteLLM's `request_tags`. LiteLLM's own source types the field as a list on
+// the in-memory payload (`request_tags: list`) but as a JSON-encoded string on the stored
+// spend-log row (`request_tags: str  # json str`), so a response may carry either; both are
+// accepted. Anything else (null, a number, malformed JSON) decodes to no tags rather than failing
+// the page: a tag is optional context and must never cost a day's spend.
+type TagList []string
+
+func (t *TagList) UnmarshalJSON(b []byte) error {
+	*t = nil
+	var list []any
+	if err := json.Unmarshal(b, &list); err == nil {
+		*t = stringsOf(list)
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		if err := json.Unmarshal([]byte(s), &list); err == nil {
+			*t = stringsOf(list)
+		}
+	}
+	return nil
+}
+
+func stringsOf(in []any) []string {
+	var out []string
+	for _, v := range in {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// Tags returns the request's tags: request_tags, falling back to metadata.tags when the former
+// is absent (LiteLLM documents tags being SENT as metadata.tags and STORED as request_tags).
+func (e LogEntry) Tags() []string {
+	if len(e.RequestTags) > 0 {
+		return e.RequestTags
+	}
+	if v, ok := e.Metadata["tags"].([]any); ok {
+		return stringsOf(v)
+	}
+	return nil
+}
+
+// ActivityFor implements the activity extraction rule from Plutus's activity contract: among the
+// request's tags, those starting with prefix; exactly one distinct match yields the remainder
+// after the prefix, zero or several yield "". Never picks one of several and never splits spend:
+// a guessed or apportioned label would be a fabricated number. An empty prefix disables the
+// feature entirely.
+func (e LogEntry) ActivityFor(prefix string) string {
+	if prefix == "" {
+		return ""
+	}
+	found := ""
+	n := 0
+	seen := map[string]bool{}
+	for _, tag := range e.Tags() {
+		if !strings.HasPrefix(tag, prefix) || seen[tag] {
+			continue
+		}
+		seen[tag] = true
+		n++
+		found = strings.TrimSpace(strings.TrimPrefix(tag, prefix))
+	}
+	if n != 1 {
+		return ""
+	}
+	return found
 }
 
 // ModelName is what the model dimension should show.

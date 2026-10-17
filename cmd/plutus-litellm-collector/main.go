@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log/slog"
 	"net/http"
 	"os"
@@ -33,10 +34,17 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
+	activityFlag := flag.String("activity-tag-prefix", "",
+		"enable the per-row `activity` label from request tags starting with this prefix (e.g. \"activity:\"); off when unset. Overrides ACTIVITY_TAG_PREFIX")
+	flag.Parse()
+
 	cfg, err := config.LoadLiteLLM(os.Getenv)
 	if err != nil {
 		logger.Error("startup failed", "error", err)
 		os.Exit(1)
+	}
+	if *activityFlag != "" {
+		cfg.ActivityTagPrefix = *activityFlag
 	}
 
 	// The master key is deliberately absent from this line. Everything else about the
@@ -46,11 +54,13 @@ func main() {
 		"plutus_ingest_url", cfg.PlutusIngestURL,
 		"push_interval", cfg.PushInterval.String(),
 		"metrics_addr", cfg.MetricsAddr,
+		"activity_tag_prefix", cfg.ActivityTagPrefix,
 	)
 
 	httpClient := &http.Client{Timeout: cfg.HTTPTimeout}
 	source := &litellm.Source{
-		Logs: litellm.New(cfg.LiteLLMBaseURL, cfg.LiteLLMMasterKey, httpClient),
+		Logs:              litellm.New(cfg.LiteLLMBaseURL, cfg.LiteLLMMasterKey, httpClient),
+		ActivityTagPrefix: cfg.ActivityTagPrefix,
 	}
 	ingestClient := ingest.NewClient(cfg.PlutusIngestURL, cfg.PlutusAPIKey, httpClient)
 	metricsState := metrics.NewState()
