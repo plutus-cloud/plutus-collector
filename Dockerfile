@@ -16,7 +16,7 @@
 # actually scanned/verified. The tag stays alongside it (`image:tag@sha256:...`) purely for
 # readability — Dependabot's `docker` ecosystem still resolves and bumps the digest when a new
 # patch is proposed, so this doesn't lose the update path the paragraph above is about.
-FROM golang:1.27.0-alpine@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc AS builder
+FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS builder
 
 WORKDIR /src
 
