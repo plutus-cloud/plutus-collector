@@ -6,7 +6,7 @@ import (
 )
 
 func TestRedactHidesPasswords(t *testing.T) {
-	const pw = "pw-" + "SECRET" // fragments: no literal credential-in-URL in source
+	const pw = "pw-" + "SECRET"
 
 	if got := redact("http://u:" + pw + "@bifrost:8080/x"); strings.Contains(got, pw) {
 		t.Errorf("password leaked: %s", got)
