@@ -1,0 +1,10 @@
+# A v1 OpenCost-subchart key the shim does not carry over. It must fail the install rather than be
+# silently ignored.
+clusterName: prod-us-east-1
+currency: USD
+apiKey: test-api-key
+opencost:
+  opencost:
+    exporter:
+      persistence:
+        enabled: true

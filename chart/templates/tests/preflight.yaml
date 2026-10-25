@@ -4,7 +4,9 @@ reason: unreachable or unauthorised metrics store, OpenCost's series missing fro
 clusters in one store, OpenCost computing nothing. The agent image already contains the
 subcommand, so there is no extra image, and nothing here needs the Plutus API key.
 */}}
-{{- if and .Values.preflight.enabled .Values.preflight.helmTest }}
+{{- $c := include "plutus-collector.cfg" . | fromYaml -}}
+{{- $ctx := dict "root" . "cfg" $c -}}
+{{- if and $c.preflight.enabled $c.preflight.helmTest }}
 apiVersion: v1
 kind: Pod
 metadata:
@@ -17,7 +19,7 @@ metadata:
 spec:
   restartPolicy: Never
   automountServiceAccountToken: false
-  {{- with .Values.imagePullSecrets }}
+  {{- with $c.global.imagePullSecrets }}
   imagePullSecrets:
     {{- toYaml . | nindent 4 }}
   {{- end }}
@@ -27,17 +29,25 @@ spec:
       type: RuntimeDefault
   containers:
     - name: preflight
-      image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      image: {{ include "plutus-collector.image" (dict "img" $c.pusher.image "registry" $c.global.imageRegistry "defaultTag" .Chart.AppVersion) | quote }}
+      imagePullPolicy: {{ $c.pusher.image.pullPolicy }}
       args: ["preflight"]
       securityContext:
         {{- toYaml .Values.securityContext | nindent 8 }}
       env:
-        {{- include "plutus-collector.preflightEnv" . | nindent 8 }}
+        {{- include "plutus-collector.preflightEnv" $ctx | nindent 8 }}
       resources:
         requests:
           cpu: 10m
           memory: 32Mi
         limits:
           memory: 64Mi
+      {{- if include "plutus-collector.mtlsMount" $c }}
+      volumeMounts:
+        {{- include "plutus-collector.mtlsMount" $c | trim | nindent 8 }}
+      {{- end }}
+  {{- if include "plutus-collector.mtlsVolume" $c }}
+  volumes:
+    {{- include "plutus-collector.mtlsVolume" $c | trim | nindent 4 }}
+  {{- end }}
 {{- end }}

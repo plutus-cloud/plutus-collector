@@ -1,0 +1,615 @@
+---
+# Source: plutus-collector/templates/opencost.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: plutus-collector-opencost
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: opencost
+    app.kubernetes.io/managed-by: Helm
+automountServiceAccountToken: true
+---
+# Source: plutus-collector/templates/prometheus.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: plutus-collector-prometheus
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: prometheus
+    app.kubernetes.io/managed-by: Helm
+automountServiceAccountToken: true
+---
+# Source: plutus-collector/templates/prometheus.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: plutus-collector-prometheus
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: prometheus
+    app.kubernetes.io/managed-by: Helm
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 60s
+    scrape_configs:
+      - job_name: opencost
+        # OpenCost's series carry the labels the allocation queries join on; keep them as exposed.
+        honor_labels: true
+        static_configs:
+          - targets: ["plutus-collector-opencost.plutus-collector.svc.cluster.local:9003"]
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: "go_.*|process_.*|promhttp_.*|kubecost_http_.*"
+            action: drop
+      - job_name: kubelet-cadvisor
+        scheme: https
+        metrics_path: /metrics/cadvisor
+        authorization:
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        # Kubelet serving certificates are commonly self-signed and not issued for the node IP.
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_node_name]
+            target_label: node
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: "container_cpu_usage_seconds_total|container_memory_working_set_bytes|container_network_receive_bytes_total|container_network_transmit_bytes_total|container_fs_usage_bytes"
+            action: keep
+      # Persistent volume usage, from the kubelet's own metrics.
+      - job_name: kubelet
+        scheme: https
+        authorization:
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        kubernetes_sd_configs:
+          - role: node
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: "kubelet_volume_stats_used_bytes"
+            action: keep
+---
+# Source: plutus-collector/templates/prometheus.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: plutus-collector-prometheus
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: prometheus
+    app.kubernetes.io/managed-by: Helm
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: "fast"
+  resources:
+    requests:
+      storage: 20Gi
+---
+# Source: plutus-collector/templates/opencost.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: plutus-collector-opencost
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: opencost
+    app.kubernetes.io/managed-by: Helm
+rules:
+  # Read-only. The same resource list as the upstream OpenCost chart this replaces, which is
+  # what OpenCost 1.121 was validated against.
+  - apiGroups: [""]
+    resources:
+      - configmaps
+      - deployments
+      - nodes
+      - pods
+      - services
+      - resourcequotas
+      - replicationcontrollers
+      - limitranges
+      - persistentvolumeclaims
+      - persistentvolumes
+      - namespaces
+      - endpoints
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["extensions"]
+    resources: ["daemonsets", "deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "deployments", "daemonsets", "replicasets"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs", "jobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+---
+# Source: plutus-collector/templates/prometheus.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: plutus-collector-prometheus
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: prometheus
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/metrics"]
+    verbs: ["get", "list", "watch"]
+---
+# Source: plutus-collector/templates/opencost.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: plutus-collector-opencost
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: opencost
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: plutus-collector-opencost
+subjects:
+  - kind: ServiceAccount
+    name: plutus-collector-opencost
+    namespace: plutus-collector
+---
+# Source: plutus-collector/templates/prometheus.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: plutus-collector-prometheus
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: prometheus
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: plutus-collector-prometheus
+subjects:
+  - kind: ServiceAccount
+    name: plutus-collector-prometheus
+    namespace: plutus-collector
+---
+# Source: plutus-collector/templates/opencost.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: plutus-collector-opencost
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: opencost
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: opencost
+  ports:
+    - name: http
+      port: 9003
+      targetPort: http
+---
+# Source: plutus-collector/templates/prometheus.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: plutus-collector-prometheus
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: prometheus
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+---
+# Source: plutus-collector/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: plutus-collector
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: metrics
+      port: 9100
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+
+---
+# Source: plutus-collector/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plutus-collector
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/managed-by: Helm
+spec:
+  # Fixed at 1 replica: a second would push the same batch twice. The backend replaces a day's
+  # rows per push, so that is harmless, but pointless.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: plutus-collector
+      app.kubernetes.io/instance: plutus-collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: plutus-collector
+        app.kubernetes.io/instance: plutus-collector
+    spec:
+      imagePullSecrets:
+        - name: mirror-pull
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+        - name: pusher
+          image: "registry.example.com/mirror/plutus-cloud/plutus-collector:0.1.0"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          ports:
+            - name: metrics
+              containerPort: 9100
+              protocol: TCP
+          env:
+            - name: OPENCOST_URL
+              value: "http://plutus-collector-opencost.plutus-collector.svc.cluster.local:9003"
+            - name: CLUSTER_NAME
+              value: "prod-us-east-1"
+            - name: CATCH_UP_DAYS
+              value: "5"
+            - name: PROMETHEUS_MODE
+              value: "bundled"
+            - name: PROMETHEUS_URL
+              value: "http://plutus-collector-prometheus.plutus-collector.svc.cluster.local:9090"
+            - name: PREFLIGHT_ENABLED
+              value: "true"
+            - name: PREFLIGHT_BLOCK_ON
+              value: "cluster_ambiguity"
+            - name: PLUTUS_INGEST_URL
+              value: "https://console.plutus-cloud.com/api/ingest/kubernetes-cost"
+            - name: CURRENCY
+              value: "USD"
+            - name: PUSH_SCHEDULE_UTC
+              value: "01:30"
+            - name: PUSH_JITTER_MINUTES
+              value: "20"
+            - name: EMPTY_RESULT
+              value: "fail"
+            - name: METRICS_ADDR
+              value: ":9100"
+            - name: PLUTUS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: plutus-collector-key
+                  key: api-key
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          # Readiness reports the data, liveness only the process: /readyz answers 503 while the
+          # last window came back empty or a preflight check is failing, so `kubectl get pods`
+          # shows 0/1 for a data problem without the pod being restarted for it.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          resources:
+            limits:
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+
+---
+# Source: plutus-collector/templates/opencost.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plutus-collector-opencost
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: opencost
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  # Recreate: with a PVC (mode none) a second pod could not mount the volume during a rollout,
+  # and a single OpenCost has no use for a surge.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: plutus-collector
+      app.kubernetes.io/instance: plutus-collector
+      app.kubernetes.io/component: opencost
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: plutus-collector
+        app.kubernetes.io/instance: plutus-collector
+        app.kubernetes.io/component: opencost
+    spec:
+      serviceAccountName: plutus-collector-opencost
+      automountServiceAccountToken: true
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      imagePullSecrets:
+        - name: mirror-pull
+      containers:
+        - name: opencost
+          image: "registry.example.com/mirror/opencost/opencost:1.121.3@sha256:4cdd173253e5abba048dfe2cfa968707a5b59d774157d5356940d0d923a6c281"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            runAsNonRoot: true
+            runAsUser: 1001
+          ports:
+            - name: http
+              containerPort: 9003
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              cpu: 10m
+              memory: 128Mi
+          # OpenCost serves nothing, /healthz included, until it can reach its data source, and it
+          # retries that for several minutes before giving up. The startup probe has to outlast
+          # that, or the kubelet restarts it while it is still waiting for Prometheus.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 60
+            timeoutSeconds: 1
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 1
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 1
+          env:
+            - name: LOG_LEVEL
+              value: info
+            - name: API_PORT
+              value: "9003"
+            - name: INSTALL_NAMESPACE
+              value: "plutus-collector"
+            # Every allocation is labelled with this, and the pusher prefers a row's own cluster
+            # over clusterName, so it has to be the same value.
+            - name: CLUSTER_ID
+              value: "prod-us-east-1"
+            - name: CLOUD_COST_ENABLED
+              value: "false"
+            - name: CUSTOM_COST_ENABLED
+              value: "false"
+            - name: MCP_SERVER_ENABLED
+              value: "false"
+            - name: PROMETHEUS_SERVER_ENDPOINT
+              value: "http://plutus-collector-prometheus.plutus-collector.svc.cluster.local:9090"
+            - name: PROMETHEUS_QUERY_RESOLUTION_SECONDS
+              value: "300"
+
+---
+# Source: plutus-collector/templates/prometheus.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plutus-collector-prometheus
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: prometheus
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  # Recreate: a ReadWriteOnce volume cannot be mounted by the old and new pod at once, and two
+  # Prometheus processes must never share a TSDB directory.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: plutus-collector
+      app.kubernetes.io/instance: plutus-collector
+      app.kubernetes.io/component: prometheus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: plutus-collector
+        app.kubernetes.io/instance: plutus-collector
+        app.kubernetes.io/component: prometheus
+      annotations:
+        checksum/config: 5a1d572deac3e44eb5ae8dedddf610b45ee4d30c7233a1a3930445c6351dd51a
+    spec:
+      serviceAccountName: plutus-collector-prometheus
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      imagePullSecrets:
+        - name: mirror-pull
+      nodeSelector:
+        kubernetes.io/os: linux
+      containers:
+        - name: prometheus
+          image: "registry.example.com/mirror/prometheus/prometheus:v3.15.1@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2"
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/data
+            - --storage.tsdb.retention.time=7d
+            - --storage.tsdb.retention.size=16384MB
+            - --web.listen-address=:9090
+            - --web.enable-lifecycle=false
+          ports:
+            - name: http
+              containerPort: 9090
+          readinessProbe:
+            httpGet: { path: /-/ready, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /-/healthy, port: http }
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              cpu: 50m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+              readOnly: true
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: config
+          configMap:
+            name: plutus-collector-prometheus
+        - name: data
+          persistentVolumeClaim:
+            claimName: plutus-collector-prometheus
+---
+# Source: plutus-collector/templates/tests/preflight.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: plutus-collector-preflight
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  imagePullSecrets:
+    - name: mirror-pull
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: preflight
+      image: "registry.example.com/mirror/plutus-cloud/plutus-collector:0.1.0"
+      imagePullPolicy: IfNotPresent
+      args: ["preflight"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+          - ALL
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+      env:
+        - name: OPENCOST_URL
+          value: "http://plutus-collector-opencost.plutus-collector.svc.cluster.local:9003"
+        - name: CLUSTER_NAME
+          value: "prod-us-east-1"
+        - name: CATCH_UP_DAYS
+          value: "5"
+        - name: PROMETHEUS_MODE
+          value: "bundled"
+        - name: PROMETHEUS_URL
+          value: "http://plutus-collector-prometheus.plutus-collector.svc.cluster.local:9090"
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 64Mi
+

@@ -1,0 +1,17 @@
+clusterName: onprem-1
+currency: EUR
+apiKey: test-api-key
+opencost:
+  pricing:
+    provider: custom
+    custom:
+      CPU: "0.02"
+      RAM: "0.003"
+      storage: "0.0001"
+prometheus:
+  mode: none
+  none:
+    acknowledgeNodesProxy: true
+    storage:
+      type: pvc
+      size: 5Gi

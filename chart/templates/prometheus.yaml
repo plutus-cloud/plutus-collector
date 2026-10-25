@@ -1,0 +1,190 @@
+{{/*
+The bundled Prometheus: one pod that OpenCost reads from. It scrapes exactly two things, OpenCost's
+own metrics port and the kubelet's cAdvisor endpoint (container usage), keeps four days, and is
+not exposed outside the cluster. No kube-state-metrics (OpenCost emits the series it needs
+itself) and no node-exporter, so it is one pod per cluster rather than one per node.
+
+RBAC is nodes (service discovery) and nodes/metrics (the kubelet's authorization for /metrics
+and /metrics/cadvisor). Not nodes/proxy.
+*/}}
+{{- $c := include "plutus-collector.cfg" . | fromYaml -}}
+{{- if and $c.opencost.enabled (eq $c.prometheus.mode "bundled") }}
+{{- $b := $c.prometheus.bundled }}
+{{- $name := printf "%s-prometheus" (include "plutus-collector.fullname" .) }}
+{{- $ctx := dict "root" . "component" "prometheus" }}
+{{- $pvc := eq $b.storage.type "pvc" }}
+{{- /* retention.size is 80% of the volume so the TSDB stops before the disk fills */ -}}
+{{- $n := atoi (regexFind "^[0-9]+" $b.storage.size) }}
+{{- $unit := regexFind "(Mi|Gi|Ti)$" $b.storage.size }}
+{{- $mib := mul $n (get (dict "Mi" 1 "Gi" 1024 "Ti" 1048576) $unit) }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "plutus-collector.componentLabels" $ctx | nindent 4 }}
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "plutus-collector.componentLabels" $ctx | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/metrics"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "plutus-collector.componentLabels" $ctx | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "plutus-collector.componentLabels" $ctx | nindent 4 }}
+data:
+  prometheus.yml: |
+    {{- include "plutus-collector.prometheusConfig" (dict "root" . "cfg" $c) | nindent 4 }}
+{{- if $pvc }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "plutus-collector.componentLabels" $ctx | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with $b.storage.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $b.storage.size }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "plutus-collector.componentLabels" $ctx | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "plutus-collector.componentSelectorLabels" $ctx | nindent 4 }}
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "plutus-collector.componentLabels" $ctx | nindent 4 }}
+spec:
+  replicas: 1
+  # Recreate: a ReadWriteOnce volume cannot be mounted by the old and new pod at once, and two
+  # Prometheus processes must never share a TSDB directory.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "plutus-collector.componentSelectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "plutus-collector.componentSelectorLabels" $ctx | nindent 8 }}
+      annotations:
+        checksum/config: {{ include "plutus-collector.prometheusConfig" (dict "root" . "cfg" $c) | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with $c.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $b.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $b.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $b.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: prometheus
+          image: {{ include "plutus-collector.image" (dict "img" $b.image "registry" $c.global.imageRegistry "defaultTag" "") | quote }}
+          imagePullPolicy: {{ $b.image.pullPolicy }}
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/data
+            - --storage.tsdb.retention.time={{ $b.retention }}
+            - --storage.tsdb.retention.size={{ div (mul $mib 8) 10 }}MB
+            - --web.listen-address=:9090
+            - --web.enable-lifecycle=false
+          ports:
+            - name: http
+              containerPort: 9090
+          readinessProbe:
+            httpGet: { path: /-/ready, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /-/healthy, port: http }
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            {{- toYaml $b.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+              readOnly: true
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        - name: data
+          {{- if $pvc }}
+          persistentVolumeClaim:
+            claimName: {{ $name }}
+          {{- else }}
+          emptyDir:
+            sizeLimit: {{ $b.storage.size }}
+          {{- end }}
+{{- end }}

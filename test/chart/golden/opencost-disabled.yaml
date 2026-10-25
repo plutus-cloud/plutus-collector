@@ -1,0 +1,186 @@
+---
+# Source: plutus-collector/templates/secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: plutus-collector
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+stringData:
+  api-key: "test-api-key"
+
+---
+# Source: plutus-collector/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: plutus-collector
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: metrics
+      port: 9100
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+
+---
+# Source: plutus-collector/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plutus-collector
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/managed-by: Helm
+spec:
+  # Fixed at 1 replica: a second would push the same batch twice. The backend replaces a day's
+  # rows per push, so that is harmless, but pointless.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: plutus-collector
+      app.kubernetes.io/instance: plutus-collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: plutus-collector
+        app.kubernetes.io/instance: plutus-collector
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+        - name: pusher
+          image: "ghcr.io/plutus-cloud/plutus-collector:0.1.0"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          ports:
+            - name: metrics
+              containerPort: 9100
+              protocol: TCP
+          env:
+            - name: OPENCOST_URL
+              value: "http://opencost.opencost.svc.cluster.local:9003"
+            - name: CLUSTER_NAME
+              value: "prod-us-east-1"
+            - name: CATCH_UP_DAYS
+              value: "3"
+            - name: PROMETHEUS_MODE
+              value: "external"
+            - name: PROMETHEUS_URL
+              value: "http://prometheus-server.monitoring.svc.cluster.local:80"
+            - name: PREFLIGHT_ENABLED
+              value: "true"
+            - name: PREFLIGHT_BLOCK_ON
+              value: "cluster_ambiguity"
+            - name: PLUTUS_INGEST_URL
+              value: "https://console.plutus-cloud.com/api/ingest/kubernetes-cost"
+            - name: CURRENCY
+              value: "USD"
+            - name: PUSH_SCHEDULE_UTC
+              value: "01:30"
+            - name: PUSH_JITTER_MINUTES
+              value: "20"
+            - name: EMPTY_RESULT
+              value: "fail"
+            - name: METRICS_ADDR
+              value: ":9100"
+            - name: PLUTUS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: plutus-collector
+                  key: api-key
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          # Readiness reports the data, liveness only the process: /readyz answers 503 while the
+          # last window came back empty or a preflight check is failing, so `kubectl get pods`
+          # shows 0/1 for a data problem without the pod being restarted for it.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          resources:
+            limits:
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+---
+# Source: plutus-collector/templates/tests/preflight.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: plutus-collector-preflight
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: preflight
+      image: "ghcr.io/plutus-cloud/plutus-collector:0.1.0"
+      imagePullPolicy: IfNotPresent
+      args: ["preflight"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+          - ALL
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+      env:
+        - name: OPENCOST_URL
+          value: "http://opencost.opencost.svc.cluster.local:9003"
+        - name: CLUSTER_NAME
+          value: "prod-us-east-1"
+        - name: CATCH_UP_DAYS
+          value: "3"
+        - name: PROMETHEUS_MODE
+          value: "external"
+        - name: PROMETHEUS_URL
+          value: "http://prometheus-server.monitoring.svc.cluster.local:80"
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 64Mi
+

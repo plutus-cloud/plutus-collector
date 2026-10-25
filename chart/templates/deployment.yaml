@@ -1,3 +1,5 @@
+{{- $c := include "plutus-collector.cfg" . | fromYaml -}}
+{{- $ctx := dict "root" . "cfg" $c -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -5,11 +7,9 @@ metadata:
   labels:
     {{- include "plutus-collector.labels" . | nindent 4 }}
 spec:
-  # Fixed at 1 replica, not a HorizontalPodAutoscaler target — see values.yaml's comment and the
-  # design doc's CronJob-vs-Deployment section. A second replica would just push the same batch
-  # twice; the backend's delete-then-insert idempotency (design doc §1) makes that harmless but
-  # pointless.
-  replicas: {{ .Values.replicaCount }}
+  # Fixed at 1 replica: a second would push the same batch twice. The backend replaces a day's
+  # rows per push, so that is harmless, but pointless.
+  replicas: 1
   selector:
     matchLabels:
       {{- include "plutus-collector.selectorLabels" . | nindent 6 }}
@@ -20,12 +20,12 @@ spec:
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+      {{- with .Values.podAnnotations }}
       annotations:
-        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-        {{- end }}
+      {{- end }}
     spec:
-      {{- with .Values.imagePullSecrets }}
+      {{- with $c.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -36,8 +36,8 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: pusher
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: {{ include "plutus-collector.image" (dict "img" $c.pusher.image "registry" $c.global.imageRegistry "defaultTag" .Chart.AppVersion) | quote }}
+          imagePullPolicy: {{ $c.pusher.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           ports:
@@ -45,27 +45,27 @@ spec:
               containerPort: {{ .Values.metricsPort }}
               protocol: TCP
           env:
-            {{- include "plutus-collector.preflightEnv" . | nindent 12 }}
+            {{- include "plutus-collector.preflightEnv" $ctx | nindent 12 }}
             - name: PREFLIGHT_ENABLED
-              value: {{ .Values.preflight.enabled | quote }}
+              value: {{ $c.preflight.enabled | quote }}
             - name: PREFLIGHT_BLOCK_ON
-              value: {{ join "," .Values.preflight.blockPushOn | default "none" | quote }}
+              value: {{ join "," $c.preflight.blockPushOn | default "none" | quote }}
             - name: PLUTUS_INGEST_URL
-              value: {{ required "plutusIngestUrl is required" .Values.plutusIngestUrl | quote }}
+              value: {{ $c.plutusIngestUrl | quote }}
             - name: CURRENCY
-              value: {{ required "currency is required — the ISO 4217 code OpenCost is priced in, e.g. \"USD\" (never defaulted, see values.yaml)" .Values.currency | quote }}
-            {{- if .Values.pushIntervalMinutes }}
-            # Deprecated: switches the agent back to a fixed interval from process start. Leave
-            # unset to push once a day at pusher.schedule.utcTime.
+              value: {{ $c.currency | quote }}
+            {{- if $c.pusher.pushIntervalMinutes }}
+            # Deprecated: a fixed interval counted from process start instead of the daily
+            # schedule.
             - name: PUSH_INTERVAL_MINUTES
-              value: {{ .Values.pushIntervalMinutes | quote }}
+              value: {{ $c.pusher.pushIntervalMinutes | quote }}
             {{- end }}
             - name: PUSH_SCHEDULE_UTC
-              value: {{ .Values.pusher.schedule.utcTime | quote }}
+              value: {{ $c.pusher.schedule.utcTime | quote }}
             - name: PUSH_JITTER_MINUTES
-              value: {{ .Values.pusher.schedule.jitterMinutes | quote }}
+              value: {{ $c.pusher.schedule.jitterMinutes | quote }}
             - name: EMPTY_RESULT
-              value: {{ required "pusher.emptyResult must be \"fail\" or \"ignore\"" (has .Values.pusher.emptyResult (list "fail" "ignore") | ternary .Values.pusher.emptyResult "") | quote }}
+              value: {{ $c.pusher.emptyResult | quote }}
             - name: METRICS_ADDR
               value: {{ printf ":%d" (int .Values.metricsPort) | quote }}
             - name: PLUTUS_API_KEY
@@ -80,8 +80,8 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 30
           # Readiness reports the data, liveness only the process: /readyz answers 503 while the
-          # last window came back empty, so `kubectl get pods` shows 0/1 for a data problem
-          # without the pod being restarted for it.
+          # last window came back empty or a preflight check is failing, so `kubectl get pods`
+          # shows 0/1 for a data problem without the pod being restarted for it.
           readinessProbe:
             httpGet:
               path: /readyz
@@ -89,7 +89,15 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 30
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+            {{- toYaml $c.pusher.resources | nindent 12 }}
+          {{- if include "plutus-collector.mtlsMount" $c }}
+          volumeMounts:
+            {{- include "plutus-collector.mtlsMount" $c | trim | nindent 12 }}
+          {{- end }}
+      {{- if include "plutus-collector.mtlsVolume" $c }}
+      volumes:
+        {{- include "plutus-collector.mtlsVolume" $c | trim | nindent 8 }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

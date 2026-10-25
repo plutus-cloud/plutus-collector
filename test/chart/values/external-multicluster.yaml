@@ -1,0 +1,15 @@
+# One store, several clusters: every OpenCost query is filtered to this cluster's label value.
+clusterName: prod-us-east-1
+currency: USD
+apiKey: test-api-key
+prometheus:
+  mode: external
+  external:
+    url: https://thanos-query.example.internal
+    clusterLabel: cluster
+    auth:
+      type: bearer
+      existingSecret: thanos-token
+      tokenKey: token
+    serviceMonitor:
+      enabled: true

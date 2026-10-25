@@ -1,0 +1,297 @@
+{{/*
+OpenCost, rendered here rather than through the upstream chart so that the cluster id, the metrics
+store, its credentials and the pricing are all derived from the one set of values. One container,
+no UI, no MCP server, read-only RBAC, no CRDs.
+
+nodes/proxy is rendered only for prometheus.mode=none, where OpenCost's collector data source
+reads the kubelet through the API server's node proxy. That permission can be used to run
+commands in any pod on the node, which is why that mode needs an explicit acknowledgement.
+*/}}
+{{- $c := include "plutus-collector.cfg" . | fromYaml -}}
+{{- if $c.opencost.enabled }}
+{{- $name := printf "%s-opencost" (include "plutus-collector.fullname" .) }}
+{{- $ctx := dict "root" . "component" "opencost" }}
+{{- $none := eq $c.prometheus.mode "none" }}
+{{- $custom := eq $c.opencost.pricing.provider "custom" }}
+{{- $state := or $none $custom }}
+{{- $statePath := ternary "/var/opencost-state" "/tmp/custom-config" $none }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "plutus-collector.componentLabels" $ctx | nindent 4 }}
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "plutus-collector.componentLabels" $ctx | nindent 4 }}
+rules:
+  # Read-only. The same resource list as the upstream OpenCost chart this replaces, which is
+  # what OpenCost 1.121 was validated against.
+  - apiGroups: [""]
+    resources:
+      - configmaps
+      - deployments
+      - nodes
+      - pods
+      - services
+      - resourcequotas
+      - replicationcontrollers
+      - limitranges
+      - persistentvolumeclaims
+      - persistentvolumes
+      - namespaces
+      - endpoints
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["extensions"]
+    resources: ["daemonsets", "deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "deployments", "daemonsets", "replicasets"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs", "jobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+{{- if $none }}
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get", "list", "watch"]
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "plutus-collector.componentLabels" $ctx | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "plutus-collector.componentLabels" $ctx | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "plutus-collector.componentSelectorLabels" $ctx | nindent 4 }}
+  ports:
+    - name: http
+      port: 9003
+      targetPort: http
+{{- if $custom }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-pricing
+  labels:
+    {{- include "plutus-collector.componentLabels" $ctx | nindent 4 }}
+data:
+  provider: "custom"
+  description: "Rates set in the plutus-collector chart (opencost.pricing.custom)"
+  CPU: {{ $c.opencost.pricing.custom.CPU | quote }}
+  RAM: {{ $c.opencost.pricing.custom.RAM | quote }}
+  GPU: {{ $c.opencost.pricing.custom.GPU | default "0" | quote }}
+  storage: {{ $c.opencost.pricing.custom.storage | quote }}
+  spotCPU: {{ $c.opencost.pricing.custom.spotCPU | default $c.opencost.pricing.custom.CPU | quote }}
+  spotRAM: {{ $c.opencost.pricing.custom.spotRAM | default $c.opencost.pricing.custom.RAM | quote }}
+  zoneNetworkEgress: {{ $c.opencost.pricing.custom.zoneNetworkEgress | default "0" | quote }}
+  regionNetworkEgress: {{ $c.opencost.pricing.custom.regionNetworkEgress | default "0" | quote }}
+  internetNetworkEgress: {{ $c.opencost.pricing.custom.internetNetworkEgress | default "0" | quote }}
+{{- end }}
+{{- if and $none (eq $c.prometheus.none.storage.type "pvc") }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}-state
+  labels:
+    {{- include "plutus-collector.componentLabels" $ctx | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with $c.prometheus.none.storage.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $c.prometheus.none.storage.size }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "plutus-collector.componentLabels" $ctx | nindent 4 }}
+spec:
+  replicas: 1
+  # Recreate: with a PVC (mode none) a second pod could not mount the volume during a rollout,
+  # and a single OpenCost has no use for a surge.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "plutus-collector.componentSelectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "plutus-collector.componentSelectorLabels" $ctx | nindent 8 }}
+      {{- if $custom }}
+      annotations:
+        checksum/pricing: {{ toYaml $c.opencost.pricing.custom | sha256sum }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: true
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        {{- if and $none (eq $c.prometheus.none.storage.type "pvc") }}
+        fsGroup: 1001
+        {{- end }}
+      {{- with $c.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: opencost
+          image: {{ include "plutus-collector.image" (dict "img" $c.opencost.image "registry" $c.global.imageRegistry "defaultTag" "") | quote }}
+          imagePullPolicy: {{ $c.opencost.image.pullPolicy }}
+          securityContext:
+            {{- toYaml $c.opencost.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 9003
+          resources:
+            {{- toYaml $c.opencost.resources | nindent 12 }}
+          # OpenCost serves nothing, /healthz included, until it can reach its data source, and it
+          # retries that for several minutes before giving up. The startup probe has to outlast
+          # that, or the kubelet restarts it while it is still waiting for Prometheus.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 60
+            timeoutSeconds: 1
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 1
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 1
+          env:
+            - name: LOG_LEVEL
+              value: info
+            - name: API_PORT
+              value: "9003"
+            - name: INSTALL_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            # Every allocation is labelled with this, and the pusher prefers a row's own cluster
+            # over clusterName, so it has to be the same value.
+            - name: CLUSTER_ID
+              value: {{ $c.clusterName | quote }}
+            - name: CLOUD_COST_ENABLED
+              value: "false"
+            - name: CUSTOM_COST_ENABLED
+              value: "false"
+            - name: MCP_SERVER_ENABLED
+              value: "false"
+            {{- if $none }}
+            - name: COLLECTOR_DATA_SOURCE_ENABLED
+              value: "true"
+            - name: COLLECTOR_SCRAPE_INTERVAL
+              value: {{ $c.prometheus.none.scrapeInterval | quote }}
+            {{- else }}
+            - name: PROMETHEUS_SERVER_ENDPOINT
+              value: {{ include "plutus-collector.prometheusUrl" (dict "root" . "cfg" $c) | quote }}
+            - name: PROMETHEUS_QUERY_RESOLUTION_SECONDS
+              value: {{ $c.opencost.queryResolutionSeconds | quote }}
+            {{- if and (eq $c.prometheus.mode "external") $c.prometheus.external.clusterLabel }}
+            # One cluster per store is what OpenCost assumes. With several, every query is
+            # grouped and filtered on this label so other clusters' pods are not merged in.
+            - name: PROM_CLUSTER_ID_LABEL
+              value: {{ $c.prometheus.external.clusterLabel | quote }}
+            - name: CURRENT_CLUSTER_ID_FILTER_ENABLED
+              value: "true"
+            {{- end }}
+            {{- with include "plutus-collector.prometheusAuthEnv" (dict "cfg" $c "style" "opencost") }}
+            {{- . | trim | nindent 12 }}
+            {{- end }}
+            {{- end }}
+            {{- if $state }}
+            - name: CONFIG_PATH
+              value: {{ $statePath | quote }}
+            {{- end }}
+            {{- if $custom }}
+            - name: PRICING_CONFIGMAP_NAME
+              value: {{ printf "%s-pricing" $name | quote }}
+            {{- end }}
+            {{- with $c.opencost.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if or $state $c.opencost.extraVolumeMounts (include "plutus-collector.mtlsMount" $c) }}
+          volumeMounts:
+            {{- if $state }}
+            - name: state
+              mountPath: {{ $statePath }}
+            {{- end }}
+            {{- with include "plutus-collector.mtlsMount" $c }}
+            {{- . | trim | nindent 12 }}
+            {{- end }}
+            {{- with $c.opencost.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+        {{- with $c.opencost.extraContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if or $state $c.opencost.extraVolumes (include "plutus-collector.mtlsVolume" $c) }}
+      volumes:
+        {{- if $state }}
+        - name: state
+          {{- if and $none (eq $c.prometheus.none.storage.type "pvc") }}
+          persistentVolumeClaim:
+            claimName: {{ $name }}-state
+          {{- else }}
+          emptyDir:
+            {{- if $none }}
+            sizeLimit: {{ $c.prometheus.none.storage.size }}
+            {{- else }}
+            {}
+            {{- end }}
+          {{- end }}
+        {{- end }}
+        {{- with include "plutus-collector.mtlsVolume" $c }}
+        {{- . | trim | nindent 8 }}
+        {{- end }}
+        {{- with $c.opencost.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+{{- end }}

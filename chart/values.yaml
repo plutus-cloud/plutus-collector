@@ -1,100 +1,208 @@
-# plutus-collector Helm chart values.
+# plutus-collector Helm chart values (chart v2).
 #
-# Required, no default — chart install will fail validation (see templates/deployment.yaml's
-# `required` calls) rather than silently guessing:
-clusterName: "" # e.g. "prod-us-east-1" — labels every pushed row; see README's "Configuration".
-currency: "" # ISO 4217 code OpenCost is priced in, e.g. "USD". Never defaulted — OpenCost does
-# not report its own currency anywhere in its output (see plutus-backend's
-# docs/multi-currency.md), so guessing here would silently mislabel every dollar figure.
+# This chart installs three things in your cluster: the pusher agent (this repository), OpenCost
+# (which computes the costs) and, by default, one small Prometheus that OpenCost reads from. It
+# does not use the upstream OpenCost or Prometheus charts: both are rendered from templates here
+# so that one setting (clusterName, the metrics store) configures all of them consistently.
+#
+# values.schema.json validates this file at install time; an unknown key or a bad value fails
+# `helm install` / `helm lint` with the reason rather than being ignored.
 
-# --- API key -----------------------------------------------------------------------------------
-# Mint a key via `POST /api/accounts/:accountId/cost-sources/kubernetes/api-key` in the Plutus
-# UI/API (see README). Exactly one of the below must be set:
-#   1. apiKey: paste the plaintext key directly — the chart creates a Secret for you. Convenient
-#      for a quickstart, but the key then lives in your Helm release values/history in plaintext.
-#   2. existingSecret + existingSecretKey: point at a Secret you created and manage yourself
-#      (e.g. via Sealed Secrets / External Secrets / SOPS) — nothing in this chart ever sees the
-#      plaintext value.
+# --- Required, no default ------------------------------------------------------------------------
+# Labels every pushed row and is OpenCost's cluster id (v1 needed it set twice).
+clusterName: "" # e.g. "prod-us-east-1"
+# ISO 4217 code OpenCost is priced in, e.g. "USD". Never defaulted: OpenCost does not report its
+# own currency anywhere in its output, so guessing would silently mislabel every figure.
+currency: ""
+
+# --- API key -------------------------------------------------------------------------------------
+# Mint a key in the Plutus UI (Cost Sources > Kubernetes > Generate API Key). Set exactly one of:
+#   apiKey: pasted into a Secret this chart creates (the key then sits in Helm release history).
+#   existingSecret + existingSecretKey: a Secret you manage yourself.
 apiKey: ""
 existingSecret: ""
 existingSecretKey: "api-key"
 
-# Where the pusher POSTs batches. The default is Plutus's live Hetzner deployment.
 plutusIngestUrl: "https://console.plutus-cloud.com/api/ingest/kubernetes-cost"
 
+global:
+  # Prefix for every image this chart pulls (a private mirror, an air-gapped registry), for
+  # example "registry.example.com/mirror". Per-image `registry`/`repository` settings still apply.
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# --- The pusher ----------------------------------------------------------------------------------
 pusher:
+  image:
+    repository: ghcr.io/plutus-cloud/plutus-collector
+    # Empty uses the chart's appVersion, which release.yml sets to the release tag.
+    tag: ""
+    # sha256:... pins the image by digest; it takes precedence over the tag.
+    digest: ""
+    pullPolicy: IfNotPresent
   schedule:
-    # The agent pushes once a day at this UTC time plus a random delay of up to jitterMinutes,
-    # and again whenever the pod starts. A fixed time keeps the push after the day's data is
-    # complete however often the pod is rescheduled; the delay spreads installs out.
+    # Once a day at this UTC time plus a random delay of up to jitterMinutes, and at startup.
     utcTime: "01:30"
     jitterMinutes: 20
-  # Each push covers this many closed UTC days, not just yesterday, so a day that was missed or
-  # came back empty is filled in once its inputs are fixed. Re-sending a day is idempotent in
-  # Plutus. Whatever metrics store OpenCost reads must keep at least catchUpDays + 1 days.
+  # Closed UTC days covered by each push, so a missed or empty day fills in once its inputs are
+  # fixed. The metrics store must keep at least catchUpDays + 1 days.
   catchUpDays: 3
-  # fail: a window with no cost rows is a fault. /readyz returns 503, last_push_success is 0 and
-  #   the log says so. A cluster always runs at least its own system pods, so a genuinely empty
-  #   day means the data behind OpenCost is missing.
+  # fail: a window with no cost rows is a fault (readiness 503, last_push_success 0, a warning
+  #   in the log). A cluster always runs its own system pods, so a true zero means missing data.
   # ignore: treat it as normal.
   emptyResult: fail
+  # Deprecated. When set (minutes) the agent uses a fixed interval counted from process start
+  # instead of the daily schedule.
+  pushIntervalMinutes: null
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      # No cpu limit: the pusher is idle almost all the time and does one short burst a day.
+      memory: 64Mi
 
 preflight:
-  # Checks that the data behind OpenCost is there (OpenCost's series in the metrics store,
-  # container usage, one cluster per store, history, allocations) at startup, before each push
-  # and every 15 minutes, and reports the result in /readyz, in /metrics and in the log.
+  # Checks that the data behind OpenCost is there, at startup, before each push and every 15
+  # minutes. Results go to /readyz, /metrics, the log and the heartbeat sent to Plutus.
   enabled: true
   # Check ids whose failure stops a push instead of only being reported. cluster_ambiguity
-  # refuses to push when the store holds several clusters and no label tells them apart, because
-  # their costs would be attributed to this one. Use [] to block nothing.
+  # refuses to push when one metrics store holds several clusters and nothing tells them apart.
   blockPushOn:
     - cluster_ambiguity
   # `helm test <release>` runs the checks once and fails with the reason.
   helmTest: true
-  # The metrics store the checks query. Empty means the one OpenCost is configured to use
-  # (opencost.opencost.prometheus.*, or OpenCost's default when that is unset).
-  prometheusUrl: ""
-  # The label that identifies this cluster in a store shared by several. Its values must equal
-  # clusterName. OpenCost must be told the same (PROM_CLUSTER_ID_LABEL and
-  # CURRENT_CLUSTER_ID_FILTER_ENABLED, through the OpenCost subchart's extraEnv).
-  clusterLabel: ""
 
-# Deprecated. Leave null to use pusher.schedule. When set (minutes), the agent returns to a
-# fixed interval counted from process start and pusher.schedule is not used.
-pushIntervalMinutes: null
+# --- OpenCost ------------------------------------------------------------------------------------
+opencost:
+  # false: use an OpenCost you already run, at `endpoint`. Nothing OpenCost-related is rendered
+  # then, and prometheus.mode is only used to tell the preflight where to look.
+  enabled: true
+  endpoint: ""
+  image:
+    registry: ghcr.io
+    repository: opencost/opencost
+    tag: "1.121.3"
+    # Resolved from the published multi-arch manifest list for 1.121.3 (amd64 and arm64).
+    digest: "sha256:4cdd173253e5abba048dfe2cfa968707a5b59d774157d5356940d0d923a6c281"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 10m
+      memory: 128Mi
+    limits:
+      memory: 1Gi
+  pricing:
+    # auto: OpenCost detects the cloud provider and uses its price list. On a cluster it cannot
+    #   identify (on-prem, Hetzner, ...) it falls back to built-in default rates, and the
+    #   preflight warns about it.
+    # custom: use the rates below.
+    provider: auto
+    custom:
+      CPU: ""
+      RAM: ""
+      GPU: "0"
+      storage: ""
+      spotCPU: ""
+      spotRAM: ""
+      zoneNetworkEgress: "0"
+      regionNetworkEgress: "0"
+      internetNetworkEgress: "0"
+  # Seconds between samples OpenCost's queries step over. Keep it at or above the scrape interval.
+  queryResolutionSeconds: 300
+  # The OpenCost UI and MCP server are not part of this chart.
+  ui:
+    enabled: false
+  mcp:
+    enabled: false
+  extraEnv: []
+  extraContainers: [] # e.g. an aws-sigv4-proxy sidecar for Amazon Managed Prometheus
+  extraVolumes: []
+  extraVolumeMounts: []
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  # v1 chart only: values for the OpenCost subchart. Read for the keys listed in MIGRATING.md and
+  # translated; any other key fails the install. Removed in the next minor release.
+  opencost: {}
 
-image:
-  # No extra path segment needed (unlike when this lived nested in the plutus monorepo) —
-  # plutus-collector is a single-purpose repo now, so the repo name and image name are the
-  # same thing.
-  repository: ghcr.io/plutus-cloud/plutus-collector
-  # Empty, deliberately — templates/deployment.yaml falls back to `.Chart.AppVersion` when this
-  # is unset, which release.yml already sets correctly on every release
-  # (`helm package --app-version "$tag"`). This used to be a hardcoded "0.1.0" placeholder that
-  # was NEVER a real published tag (every real release is "v0.1.0"/"v0.1.1"/"v0.1.2", with a
-  # "v" prefix) — confirmed live, a customer install with no override would pull a tag that has
-  # never existed and fail with a generic image-pull error. Only set this to pin an install to a
-  # version older than the chart it came from; leave it empty otherwise so a `helm install`
-  # always gets the app version matching the chart version, automatically.
-  tag: ""
-  pullPolicy: IfNotPresent
+# --- Where OpenCost's data lives -------------------------------------------------------------------
+prometheus:
+  # bundled: one small Prometheus rendered by this chart, scraping OpenCost and the kubelet's
+  #   cAdvisor endpoint. The default; needs nothing pre-installed.
+  # external: a Prometheus-compatible store you run (Prometheus, Mimir, Thanos, Grafana Cloud).
+  #   OpenCost's metrics (port 9003) must be scraped into it; see the README.
+  # none: experimental. OpenCost's built-in collector data source, no Prometheus at all. It
+  #   needs the nodes/proxy permission (see none.acknowledgeNodesProxy).
+  mode: bundled
+  bundled:
+    image:
+      registry: quay.io
+      repository: prometheus/prometheus
+      tag: v3.15.1
+      # Resolved from the published multi-arch manifest list for v3.15.1.
+      digest: "sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2"
+      pullPolicy: IfNotPresent
+    scrapeInterval: 60s
+    # Must be at least pusher.catchUpDays + 1 days.
+    retention: 4d
+    storage:
+      # emptyDir survives container restarts but not the pod being rescheduled, which loses
+      # history (the preflight reports it). pvc keeps it, and the pod stays Pending on a cluster
+      # with no default StorageClass.
+      type: emptyDir
+      size: 4Gi
+      storageClass: ""
+    scrapeCadvisor: true
+    scrapeKubeletVolumeStats: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  external:
+    # Required when mode is external. The query API base: Prometheus's server root, Grafana
+    # Cloud's .../api/prom, Mimir's .../prometheus.
+    url: ""
+    auth:
+      type: none # none | basic | bearer | mtls
+      existingSecret: ""
+      usernameKey: username
+      passwordKey: password
+      tokenKey: token
+      caKey: ca.crt
+      certKey: tls.crt
+      keyKey: tls.key
+    tenantId: "" # X-Scope-OrgID for Mimir and Cortex
+    insecureSkipVerify: false
+    # Set when the store holds more than one cluster: the label that identifies the cluster,
+    # whose values must equal clusterName. OpenCost then filters every query to this cluster.
+    clusterLabel: ""
+    serviceMonitor:
+      # Renders a ServiceMonitor for OpenCost's metrics, only when the cluster has the
+      # prometheus-operator CRD. Never required.
+      enabled: false
+      labels: {}
+  none:
+    # OpenCost's collector data source reads the kubelet through the API server's node proxy,
+    # which needs the nodes/proxy permission. That permission can be used to run commands in any
+    # pod on the node, so the chart renders it only when you set this to true.
+    acknowledgeNodesProxy: false
+    scrapeInterval: 30s
+    storage:
+      type: emptyDir
+      size: 2Gi
+      storageClass: ""
 
-imagePullSecrets: []
-
-replicaCount: 1 # deliberately fixed at 1 — see the design doc's CronJob-vs-Deployment section;
-# this is a long-lived process with an in-process retry loop, not a horizontally-scaled worker.
-
-resources:
-  requests:
-    cpu: 10m
-    memory: 32Mi
-  limits:
-    # No cpu limit, deliberately — this is a background pusher that's idle almost all the time
-    # and then does a periodic (daily by default, see pushIntervalMinutes) burst of work querying
-    # OpenCost and posting a batch; a hard CPU limit would throttle exactly that burst rather than
-    # the idle time it's actually sized for.
-    memory: 64Mi
-
+# --- The pusher pod --------------------------------------------------------------------------------
 podAnnotations: {}
 podLabels: {}
 nodeSelector: {}
@@ -110,38 +218,17 @@ securityContext:
       - ALL
 
 metricsPort: 9100
-
 service:
-  # Exposes /metrics (and /healthz) as a plain ClusterIP Service, not a ServiceMonitor — we
-  # can't assume the customer runs prometheus-operator, so a plain Service is the safer default;
-  # see README's "Scraping /metrics" for how to point Alloy/Prometheus at it either way.
+  # A plain ClusterIP Service for /metrics and the probes, not a ServiceMonitor: the prometheus
+  # operator is not assumed.
   enabled: true
   port: 9100
 
-# --- OpenCost -----------------------------------------------------------------------------------
-opencost:
-  # true (default): installs OpenCost as a subchart dependency — one `helm install`, no
-  # prerequisites. false: use an OpenCost instance you already run; set `endpoint` below and the
-  # subchart is skipped entirely (Chart.yaml's dependency `condition`).
-  enabled: true
+nameOverride: ""
+fullnameOverride: ""
 
-  # Only used when enabled=false. The pusher's OPENCOST_URL env var — e.g.
-  # http://opencost.opencost.svc.cluster.local:9003 or wherever your existing install listens.
-  endpoint: ""
-
-  # Everything under the nested `opencost.opencost:` key below is passed through as the OpenCost
-  # subchart's own values (Helm's "key matches dependency name" convention; the subchart's chart
-  # is itself named opencost, which is why the key appears twice) when enabled=true.
-  #
-  # OpenCost needs a Prometheus-compatible store that holds the series it emits, and this chart
-  # version does not install one. Its default endpoint is
-  # http://prometheus-server.prometheus-system.svc.cluster.local:80, so on a cluster with no
-  # Prometheus OpenCost never becomes ready. Point it at yours, and have that Prometheus scrape
-  # OpenCost (see the README's "Prerequisites").
-  opencost:
-    # The OpenCost web UI and its MCP server are off: this agent only reads /allocation, and
-    # the MCP server is an unauthenticated in-cluster endpoint serving cost data.
-    ui:
-      enabled: false
-    mcp:
-      enabled: false
+# --- Deprecated v1 keys (translated, removed in the next minor release; see MIGRATING.md) ----------
+pushIntervalMinutes: null
+imagePullSecrets: []
+image: {}
+resources: {}

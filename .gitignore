@@ -1,7 +1,3 @@
-# Fetched by `helm dependency build` (the OpenCost subchart) from the committed chart/Chart.lock,
-# never vendored. Chart.lock itself is committed: it pins the exact subchart that ships.
-chart/charts/
-
 # Local build output.
 /plutus-collector
 /dist/
