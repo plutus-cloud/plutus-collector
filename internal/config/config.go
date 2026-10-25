@@ -101,6 +101,11 @@ type OpenCostConfig struct {
 	// built-in collector data source). Reported to Plutus; it changes nothing locally.
 	PrometheusMode string
 
+	// PlutusIngestCAFile is a PEM bundle trusted in addition to the system roots when reaching
+	// PlutusIngestURL (PLUTUS_INGEST_CA_FILE), for a TLS-intercepting proxy or an internal gateway
+	// with a private CA. Verification is never disabled.
+	PlutusIngestCAFile string
+
 	// Prometheus and Preflight configure the checks that run before a push. See preflight.go.
 	Prometheus PrometheusConfig
 	Preflight  PreflightConfig
@@ -261,6 +266,8 @@ func LoadOpenCost(getenv func(string) string) (*OpenCostConfig, error) {
 		JitterMinutes:  defaultJitterMinutes,
 		CatchUpDays:    defaultCatchUpDays,
 		PrometheusMode: stringOrDefault(getenv("PROMETHEUS_MODE"), defaultPrometheusMode),
+
+		PlutusIngestCAFile: getenv("PLUTUS_INGEST_CA_FILE"),
 	}
 
 	scheduleRaw := stringOrDefault(getenv("PUSH_SCHEDULE_UTC"), defaultScheduleUTC)

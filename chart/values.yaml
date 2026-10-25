@@ -40,6 +40,12 @@ pusher:
     # sha256:... pins the image by digest; it takes precedence over the tag.
     digest: ""
     pullPolicy: IfNotPresent
+  # A private CA to trust, in addition to the system roots, when reaching plutusIngestUrl: a
+  # TLS-intercepting proxy or an internal gateway. A Secret you create with the PEM bundle under
+  # `key`. Verification is never disabled.
+  ingestCA:
+    existingSecret: ""
+    key: ca.crt
   schedule:
     # Once a day at this UTC time plus a random delay of up to jitterMinutes, and at startup.
     utcTime: "01:30"

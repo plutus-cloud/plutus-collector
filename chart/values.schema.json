@@ -32,6 +32,14 @@
       "additionalProperties": false,
       "properties": {
         "image": { "$ref": "#/definitions/podImage" },
+        "ingestCA": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "existingSecret": { "type": "string" },
+            "key": { "type": "string", "minLength": 1 }
+          }
+        },
         "schedule": {
           "type": "object",
           "additionalProperties": false,

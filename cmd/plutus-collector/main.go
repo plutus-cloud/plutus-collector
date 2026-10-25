@@ -69,7 +69,12 @@ func main() {
 		Currency:    cfg.Currency,
 		EmptyOK:     cfg.EmptyResultIgnore,
 	}
-	ingestClient := ingest.NewClient(cfg.PlutusIngestURL, cfg.PlutusAPIKey, httpClient)
+	ingestHTTP, err := ingest.NewHTTPClient(cfg.HTTPTimeout, cfg.PlutusIngestCAFile)
+	if err != nil {
+		logger.Error("startup failed", "error", err)
+		os.Exit(1)
+	}
+	ingestClient := ingest.NewClient(cfg.PlutusIngestURL, cfg.PlutusAPIKey, ingestHTTP)
 	metricsState := metrics.NewState()
 
 	pcfg := pusher.Config{

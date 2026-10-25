@@ -54,6 +54,10 @@ spec:
               value: {{ $c.plutusIngestUrl | quote }}
             - name: CURRENCY
               value: {{ $c.currency | quote }}
+            {{- if $c.pusher.ingestCA.existingSecret }}
+            - name: PLUTUS_INGEST_CA_FILE
+              value: {{ printf "/etc/plutus-ingest-ca/%s" $c.pusher.ingestCA.key | quote }}
+            {{- end }}
             {{- if $c.pusher.pushIntervalMinutes }}
             # Deprecated: a fixed interval counted from process start instead of the daily
             # schedule.
@@ -90,13 +94,27 @@ spec:
             periodSeconds: 30
           resources:
             {{- toYaml $c.pusher.resources | nindent 12 }}
-          {{- if include "plutus-collector.mtlsMount" $c }}
+          {{- if or (include "plutus-collector.mtlsMount" $c) $c.pusher.ingestCA.existingSecret }}
           volumeMounts:
-            {{- include "plutus-collector.mtlsMount" $c | trim | nindent 12 }}
+            {{- with include "plutus-collector.mtlsMount" $c }}
+            {{- . | trim | nindent 12 }}
+            {{- end }}
+            {{- if $c.pusher.ingestCA.existingSecret }}
+            - name: ingest-ca
+              mountPath: /etc/plutus-ingest-ca
+              readOnly: true
+            {{- end }}
           {{- end }}
-      {{- if include "plutus-collector.mtlsVolume" $c }}
+      {{- if or (include "plutus-collector.mtlsVolume" $c) $c.pusher.ingestCA.existingSecret }}
       volumes:
-        {{- include "plutus-collector.mtlsVolume" $c | trim | nindent 8 }}
+        {{- with include "plutus-collector.mtlsVolume" $c }}
+        {{- . | trim | nindent 8 }}
+        {{- end }}
+        {{- if $c.pusher.ingestCA.existingSecret }}
+        - name: ingest-ca
+          secret:
+            secretName: {{ $c.pusher.ingestCA.existingSecret }}
+        {{- end }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
