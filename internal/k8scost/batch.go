@@ -47,11 +47,41 @@ type Row struct {
 }
 
 // Batch is the full POST body.
+//
+// Rows is always serialised as an array, never null: an empty window is still POSTed (with the
+// Collector block explaining why) so Plutus can tell a running agent that has nothing to report
+// from one that is not running.
 type Batch struct {
-	ClusterName string `json:"cluster_name"`
-	Currency    string `json:"currency"`
-	Rows        []Row  `json:"rows"`
+	ClusterName string     `json:"cluster_name"`
+	Currency    string     `json:"currency"`
+	Rows        []Row      `json:"rows"`
+	Collector   *Collector `json:"collector,omitempty"`
 }
+
+// Collector describes the agent and the window a batch covers. It is the same object on a
+// heartbeat (rows: []) and, optionally, on an ordinary push; EmptyReason is only set on the
+// former. Preflight maps a check id to "ok", "warn" or "error".
+type Collector struct {
+	Version        string            `json:"version"`
+	PrometheusMode string            `json:"prometheus_mode"`
+	Window         CollectorWindow   `json:"window"`
+	EmptyReason    string            `json:"empty_reason,omitempty"`
+	Preflight      map[string]string `json:"preflight,omitempty"`
+}
+
+// CollectorWindow is the [start, end) range the batch was queried over, RFC3339 UTC.
+type CollectorWindow struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
+}
+
+// Reasons a window can come back with no rows, as sent in Collector.EmptyReason.
+const (
+	// EmptyNoAllocations: OpenCost answered but returned no allocations at all.
+	EmptyNoAllocations = "no_allocations"
+	// EmptyAllZeroCost: OpenCost returned allocations but every one priced at zero.
+	EmptyAllZeroCost = "all_zero_cost"
+)
 
 // OpenCostRow is the minimal shape this package maps from — deliberately not a direct
 // dependency on internal/opencost.Row, so the mapping logic is unit-testable without pulling in

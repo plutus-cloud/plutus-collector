@@ -2,8 +2,12 @@ plutus-collector has been installed.
 
 Cluster name:   {{ .Values.clusterName }}
 Ingest URL:     {{ .Values.plutusIngestUrl }}
-Push interval:  every {{ .Values.pushIntervalMinutes }} minutes
+Push schedule:  {{ if .Values.pushIntervalMinutes }}every {{ .Values.pushIntervalMinutes }} minutes (deprecated, prefer pusher.schedule){{ else }}daily at {{ .Values.pusher.schedule.utcTime }} UTC (+ up to {{ .Values.pusher.schedule.jitterMinutes }} min), last {{ .Values.pusher.catchUpDays }} closed days{{ end }}
 OpenCost:       {{ if .Values.opencost.enabled }}bundled subchart{{ else }}{{ .Values.opencost.endpoint }}{{ end }}
+
+This chart does not install a Prometheus. OpenCost reads its data from one, by default at
+prometheus-server.prometheus-system.svc.cluster.local:80, and that Prometheus has to scrape
+OpenCost too. If OpenCost never becomes ready, or the pod below shows 0/1, start there.
 
 Check it's working:
 
@@ -12,8 +16,8 @@ Check it's working:
   curl localhost:9100/metrics
 
 Look for `plutus_collector_last_push_success 1` after the first push cycle (immediate on
-startup, then every {{ .Values.pushIntervalMinutes }} minutes). You can also check
-`last_ingested_at` on the Kubernetes cost source's connection panel in the Plutus UI.
+startup, then on the schedule above). The pod is Ready (1/1) only while the last window had
+cost rows; `curl localhost:9100/readyz` says why when it is not.
 
 If `plutus_collector_last_push_success 0`, check the pod logs:
 

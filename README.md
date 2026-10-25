@@ -48,6 +48,15 @@ collector has its own section below; what the two genuinely share is under "All 
 
 - A Kubernetes cluster (1.24+ is a safe assumption; nothing here needs anything exotic).
 - Helm 3.
+- **A Prometheus-compatible store that OpenCost can query, and that scrapes OpenCost.** OpenCost
+  computes costs from time series (container usage and requests, node prices, labels) that live
+  in Prometheus, and it does not store them itself. This chart installs OpenCost but **does not
+  install a Prometheus**. OpenCost's default endpoint is
+  `http://prometheus-server.prometheus-system.svc.cluster.local:80`; on a cluster without one
+  OpenCost never becomes ready and nothing is pushed. Where a Prometheus does answer but does not
+  scrape OpenCost's own `:9003` metrics, OpenCost is ready but has no cost data. Either way the
+  agent now says so: its pod stays `0/1` Ready, `plutus_collector_last_push_success` is `0` and
+  the log reports the empty window.
 - Either let this chart install OpenCost for you (default), or already run OpenCost yourself.
 - A Plutus account with the Kubernetes cost source added. In the Plutus UI: **Cost Sources →
   Kubernetes → Generate API Key** — this mints the key and shows you the exact `helm install`
@@ -65,8 +74,10 @@ helm install plutus-collector oci://ghcr.io/plutus-cloud/charts/plutus-collector
   --set apiKey=<the key from the Plutus UI>
 ```
 
-That's the whole install: it deploys OpenCost (bundled subchart) plus this pusher, and cost data
-starts flowing into Plutus within one push cycle (daily by default).
+This deploys OpenCost (bundled subchart) plus this pusher. It works when the cluster already has a
+Prometheus that scrapes OpenCost (see Prerequisites); point OpenCost at yours with the
+subchart's `opencost.opencost.prometheus.*` values. Cost data reaches Plutus after the first
+complete UTC day, on the daily push (01:30 UTC plus a random delay of up to 20 minutes).
 
 If you already run OpenCost:
 
@@ -116,7 +127,11 @@ The agent itself reads only environment variables (12-factor, no config file); t
 | `currency`                        | `CURRENCY`               | **yes**  | none — never defaults to USD; see "Currency" below               |
 | `apiKey` / `existingSecret`+`existingSecretKey` | `PLUTUS_API_KEY` (via Secret) | **yes** | none |
 | `plutusIngestUrl`                 | `PLUTUS_INGEST_URL`      | no       | `https://console.plutus-cloud.com/api/ingest/kubernetes-cost`   |
-| `pushIntervalMinutes`             | `PUSH_INTERVAL_MINUTES`  | no       | `1440` (daily)                                                   |
+| `pusher.schedule.utcTime`         | `PUSH_SCHEDULE_UTC`      | no       | `01:30` (UTC, once a day, and at startup)                        |
+| `pusher.schedule.jitterMinutes`   | `PUSH_JITTER_MINUTES`    | no       | `20` (random delay added to the daily time)                      |
+| `pusher.catchUpDays`              | `CATCH_UP_DAYS`          | no       | `3` (closed UTC days covered by each push)                       |
+| `pusher.emptyResult`              | `EMPTY_RESULT`           | no       | `fail` (`ignore` treats a window with no cost rows as normal)    |
+| `pushIntervalMinutes` (deprecated) | `PUSH_INTERVAL_MINUTES` | no       | unset; when set, replaces the daily schedule with a fixed interval |
 | n/a — derived from `opencost.enabled`/`opencost.endpoint` | `OPENCOST_URL` | no | bundled subchart's in-cluster Service when `opencost.enabled=true`, otherwise `opencost.endpoint` |
 | `metricsPort` / `service.port`    | `METRICS_ADDR`           | no       | `9100`                                                            |
 
@@ -132,8 +147,11 @@ it to whatever ISO 4217 code OpenCost was configured with.
 
 ### What this pushes
 
-Once a day (or every `pushIntervalMinutes`), the agent queries OpenCost for the previous UTC
-day's allocation, grouped by namespace/controller/pod/container, and POSTs a batch like:
+Once a day at the scheduled time (and when it starts), the agent queries OpenCost for each of the
+last `catchUpDays` closed UTC days, grouped by namespace/controller/pod/container, and POSTs a
+batch per day like the one below. Covering several days is what lets a day that was missed or
+came back empty fill in later; Plutus replaces a day's rows on each push, so re-sending is safe.
+Within one process a day that was already delivered is not queried again.
 
 ```json
 {
@@ -169,6 +187,50 @@ occasional missing label or GPU figure in Plutus reflects what OpenCost itself r
 bug in this agent. The response is `{ accepted, rejected, errors: [...] }`; any rejections are
 logged with full detail — check the pod logs if `/metrics` shows a push succeeding but data
 looks incomplete in Plutus.
+
+#### When a day comes back empty
+
+A cluster always runs at least its own system pods, so a day with no priced allocations means the
+data behind OpenCost is missing, not that nothing ran. The agent does not treat that as a
+successful push of nothing:
+
+- it logs a warning (an error from the second empty day in a row),
+- `plutus_collector_last_push_success` is `0` and `plutus_collector_empty_results_total` and
+  `plutus_collector_consecutive_empty_windows` count it,
+- `/readyz` returns 503, so `kubectl get pods` shows `0/1` (`/healthz` stays 200: a data problem
+  never restarts the pod), and
+- it still POSTs a **heartbeat** for the newest window, `rows: []` plus a `collector` block, so
+  Plutus can tell an agent that is running but has no data from one that is not running:
+
+```json
+{
+  "cluster_name": "prod-us-east-1",
+  "currency": "USD",
+  "rows": [],
+  "collector": {
+    "version": "v1.3.0",
+    "prometheus_mode": "external",
+    "window": { "start": "2026-08-10T00:00:00Z", "end": "2026-08-11T00:00:00Z" },
+    "empty_reason": "no_allocations"
+  }
+}
+```
+
+A heartbeat writes and deletes no cost rows. `EMPTY_RESULT=ignore` turns the failure behaviour
+off for clusters where an empty day really is normal; the heartbeat is still sent.
+
+#### One-off pushes
+
+`plutus-collector --once` does one pass and exits non-zero if any window failed or came back
+empty. `--window=<start>,<end>` (RFC3339) pushes that window instead of the recent days:
+
+```bash
+kubectl -n plutus-collector exec deploy/plutus-collector -- \
+  /plutus-collector --once --window=2026-10-24T00:00:00Z,2026-10-25T00:00:00Z
+```
+
+Rows are dated by the start's UTC day and a push replaces that whole day in Plutus, so backfill
+whole UTC days; a shorter window replaces the day with a partial one.
 
 ## LiteLLM collector
 

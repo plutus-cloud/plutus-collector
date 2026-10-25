@@ -22,9 +22,26 @@ existingSecretKey: "api-key"
 # Where the pusher POSTs batches. The default is Plutus's live Hetzner deployment.
 plutusIngestUrl: "https://console.plutus-cloud.com/api/ingest/kubernetes-cost"
 
-# How often the agent queries OpenCost and pushes a batch. Defaults to daily (1440), matching
-# OpenCost's own daily allocation-aggregation cadence — pushing more often buys nothing.
-pushIntervalMinutes: 1440
+pusher:
+  schedule:
+    # The agent pushes once a day at this UTC time plus a random delay of up to jitterMinutes,
+    # and again whenever the pod starts. A fixed time keeps the push after the day's data is
+    # complete however often the pod is rescheduled; the delay spreads installs out.
+    utcTime: "01:30"
+    jitterMinutes: 20
+  # Each push covers this many closed UTC days, not just yesterday, so a day that was missed or
+  # came back empty is filled in once its inputs are fixed. Re-sending a day is idempotent in
+  # Plutus. Whatever metrics store OpenCost reads must keep at least catchUpDays + 1 days.
+  catchUpDays: 3
+  # fail: a window with no cost rows is a fault. /readyz returns 503, last_push_success is 0 and
+  #   the log says so. A cluster always runs at least its own system pods, so a genuinely empty
+  #   day means the data behind OpenCost is missing.
+  # ignore: treat it as normal.
+  emptyResult: fail
+
+# Deprecated. Leave null to use pusher.schedule. When set (minutes), the agent returns to a
+# fixed interval counted from process start and pusher.schedule is not used.
+pushIntervalMinutes: null
 
 image:
   # No extra path segment needed (unlike when this lived nested in the plutus monorepo) —
@@ -92,8 +109,19 @@ opencost:
   # http://opencost.opencost.svc.cluster.local:9003 or wherever your existing install listens.
   endpoint: ""
 
-  # Everything else under this `opencost:` key is passed through as the OpenCost subchart's own
-  # values (Helm's standard "key matches dependency name" convention) when enabled=true. See
-  # that chart's own values.yaml/README for what's available — left empty here to take its
-  # defaults. TODO: confirm the subchart's actual values shape once its repo/name is verified
-  # (see Chart.yaml's dependencies TODO).
+  # Everything under the nested `opencost.opencost:` key below is passed through as the OpenCost
+  # subchart's own values (Helm's "key matches dependency name" convention; the subchart's chart
+  # is itself named opencost, which is why the key appears twice) when enabled=true.
+  #
+  # OpenCost needs a Prometheus-compatible store that holds the series it emits, and this chart
+  # version does not install one. Its default endpoint is
+  # http://prometheus-server.prometheus-system.svc.cluster.local:80, so on a cluster with no
+  # Prometheus OpenCost never becomes ready. Point it at yours, and have that Prometheus scrape
+  # OpenCost (see the README's "Prerequisites").
+  opencost:
+    # The OpenCost web UI and its MCP server are off: this agent only reads /allocation, and
+    # the MCP server is an unauthenticated in-cluster endpoint serving cost data.
+    ui:
+      enabled: false
+    mcp:
+      enabled: false

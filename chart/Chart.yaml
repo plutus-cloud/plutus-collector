@@ -20,10 +20,12 @@ maintainers:
     url: https://plutus-cloud.com
 
 dependencies:
-  # Verified 2026-08-10: https://opencost.github.io/opencost-helm-chart/index.yaml resolves
-  # (HTTP 200) and lists a chart named "opencost", latest published version 2.5.29 at the time
-  # of checking.
+  # Pinned to an exact version, with Chart.lock committed beside this file. A range here made
+  # every release bundle whatever OpenCost chart was newest on the day it was cut, so the
+  # OpenCost version (and with it the set of series the pusher's data depends on) could change
+  # without any change in this repository. Bump deliberately, run `helm dependency update` and
+  # commit the new Chart.lock together.
   - name: opencost
-    version: ">=2.5.0 <3.0.0"
+    version: "2.5.33"
     repository: "https://opencost.github.io/opencost-helm-chart"
     condition: opencost.enabled

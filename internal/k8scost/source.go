@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/plutus-cloud/plutus-collector/internal/opencost"
+	"github.com/plutus-cloud/plutus-collector/internal/pusher"
 )
 
 // AllocationSource is the subset of opencost.Client's behavior this source needs — an interface
@@ -29,9 +30,42 @@ type Source struct {
 	// Currency is the ISO 4217 code OpenCost was configured to price in. OpenCost emits no
 	// currency field anywhere, so this is carried in the payload and can never be defaulted.
 	Currency string
+
+	// EmptyOK makes an empty window a normal outcome (EMPTY_RESULT=ignore). It is off by
+	// default: a cluster always runs at least its own system pods, so a day with no priced
+	// allocations means the pipeline behind OpenCost is broken, and the agent should say so
+	// rather than report a healthy push of nothing.
+	EmptyOK bool
 }
 
 func (s *Source) Name() string { return "OpenCost" }
+
+func (s *Source) EmptyIsHealthy() bool { return s.EmptyOK }
+
+// Annotate fills the batch's collector block from what the pusher knows, keeping an empty reason
+// the source already set. Implementing it is also what tells the pusher this endpoint accepts a
+// heartbeat: Plutus's kubernetes-cost ingest writes nothing for rows: [].
+func (s *Source) Annotate(payload any, meta pusher.CollectorMeta) any {
+	batch, ok := payload.(Batch)
+	if !ok {
+		return payload
+	}
+	c := Collector{}
+	if batch.Collector != nil {
+		c = *batch.Collector
+	}
+	c.Version = meta.Version
+	c.PrometheusMode = meta.PrometheusMode
+	c.Window = CollectorWindow{
+		Start: meta.WindowStart.UTC().Format(time.RFC3339),
+		End:   meta.WindowEnd.UTC().Format(time.RFC3339),
+	}
+	if len(meta.Preflight) > 0 {
+		c.Preflight = meta.Preflight
+	}
+	batch.Collector = &c
+	return batch
+}
 
 func (s *Source) Collect(ctx context.Context, start, end time.Time, dateKey string) (any, int, error) {
 	rows, err := s.Allocations.ComputeAllocation(ctx, start, end)
@@ -62,6 +96,13 @@ func (s *Source) Collect(ctx context.Context, start, end time.Time, dateKey stri
 		ClusterName: s.ClusterName,
 		Currency:    s.Currency,
 		Rows:        MapRows(dateKey, s.ClusterName, ocRows),
+	}
+	if len(batch.Rows) == 0 {
+		reason := EmptyAllZeroCost
+		if len(rows) == 0 {
+			reason = EmptyNoAllocations
+		}
+		batch.Collector = &Collector{EmptyReason: reason}
 	}
 	return batch, len(batch.Rows), nil
 }

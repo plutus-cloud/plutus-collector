@@ -94,7 +94,13 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64
+          # amd64 and arm64: the chart installs onto Graviton and Ampere nodes too, and an
+          # amd64-only manifest fails there with an exec format error. The Go compiler runs
+          # natively and cross-compiles (see the Dockerfile's builder stage).
+          platforms: linux/amd64,linux/arm64
+          # The agent reports its version to Plutus in every push.
+          build-args: |
+            VERSION=${{ github.ref_name }}
           push: true
           tags: |
             ghcr.io/${{ github.repository }}:${{ github.ref_name }}
@@ -111,7 +117,7 @@ jobs:
           context: .
           file: ./Dockerfile
           target: litellm
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/plutus-litellm-collector:${{ github.ref_name }}
@@ -124,7 +130,7 @@ jobs:
           context: .
           file: ./Dockerfile
           target: bifrost
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/plutus-bifrost-collector:${{ github.ref_name }}
@@ -166,10 +172,11 @@ jobs:
 
       # --version/--app-version pass the release tag straight through (e.g. "v0.1.0") rather than
       # Chart.yaml's own committed "0.1.0" placeholder — Helm's semver library accepts a leading
-      # "v" and strips it, so no reformatting needed. `helm dependency update` fetches the
-      # OpenCost subchart declared in Chart.yaml before packaging, so the published chart is
-      # self-contained rather than depending on a customer's own `helm dependency update`
-      # succeeding against opencost.github.io at install time. Pushed under a `charts/`
+      # "v" and strips it, so no reformatting needed. `helm dependency build` fetches exactly the
+      # OpenCost subchart version recorded in the committed Chart.lock (it fails if Chart.yaml and
+      # the lock disagree, where `update` would silently re-resolve), so the published chart is
+      # self-contained and reproducible rather than depending on a customer's own
+      # `helm dependency update` succeeding against opencost.github.io at install time. Pushed under a `charts/`
       # sub-segment so the chart's OCI package doesn't collide with the image's own package at
       # the bare repo path above.
       # Tag refs only: a chart version must be valid semver, and `github.ref_name` on a
@@ -183,7 +190,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          helm dependency update
+          helm dependency build
           helm package . --version "$RELEASE_TAG" --app-version "$RELEASE_TAG"
           helm push "plutus-collector-$RELEASE_TAG.tgz" "oci://ghcr.io/plutus-cloud/charts"
 

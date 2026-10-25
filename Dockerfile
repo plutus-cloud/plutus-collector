@@ -16,7 +16,17 @@
 # actually scanned/verified. The tag stays alongside it (`image:tag@sha256:...`) purely for
 # readability — Dependabot's `docker` ecosystem still resolves and bumps the digest when a new
 # patch is proposed, so this doesn't lose the update path the paragraph above is about.
-FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS builder
+#
+# --platform=$BUILDPLATFORM keeps the compiler running natively on the build machine and lets Go
+# cross-compile to each requested target (TARGETOS/TARGETARCH, set by buildx), so a multi-arch
+# image does not run the toolchain under emulation. The base is a multi-platform manifest list,
+# which is what makes the platform override resolvable.
+FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+# The release tag, reported to Plutus in each push. "dev" for a build that does not pass one.
+ARG VERSION=dev
 
 WORKDIR /src
 
@@ -28,20 +38,26 @@ COPY . .
 
 # CGO_ENABLED=0 for a fully static binary (no libc dependency, required for distroless/static).
 # -trimpath and -ldflags="-s -w" strip filesystem paths and debug symbols from the binary.
-# Both collectors are built from this one stage — they share internal/ingest, internal/pusher and
-# internal/metrics, so compiling them together is cheaper than two builds and guarantees the two
-# binaries were cut from the same commit of that shared code.
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+# All three collectors are built from this one stage — they share internal/ingest, internal/pusher
+# and internal/metrics, so compiling them together is cheaper than separate builds and guarantees
+# the binaries were cut from the same commit of that shared code.
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
     -trimpath \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X github.com/plutus-cloud/plutus-collector/internal/version.Version=${VERSION}" \
     -o /out/plutus-collector \
     ./cmd/plutus-collector
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
     -trimpath \
     -ldflags="-s -w" \
     -o /out/plutus-litellm-collector \
     ./cmd/plutus-litellm-collector
+
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
+    -trimpath \
+    -ldflags="-s -w" \
+    -o /out/plutus-bifrost-collector \
+    ./cmd/plutus-bifrost-collector
 
 # Also pinned to its resolved manifest-list digest, same reasoning and same
 # tag-plus-digest syntax as the builder stage above — Dependabot's `docker` ecosystem bumps
@@ -52,13 +68,8 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 # correctness point rather than tidiness: a second copy is a second thing for Dependabot to bump
 # and a second thing for it to miss, and a stale runtime base is the quiet failure mode — the
 # image still builds, the scanners still pass, and it just no longer has the fixes the other one
-# got. With a single pin the two images cannot diverge.
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -trimpath \
-    -ldflags="-s -w" \
-    -o /out/plutus-bifrost-collector \
-    ./cmd/plutus-bifrost-collector
-
+# got. With a single pin the images cannot diverge. It is a manifest list (amd64, arm64, ...), so
+# each target platform gets its own matching base.
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS runtime-base
 
 # ─── Two images, one Dockerfile ─────────────────────────────────────────────

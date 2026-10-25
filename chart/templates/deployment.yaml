@@ -53,8 +53,20 @@ spec:
               value: {{ required "clusterName is required — set it to this cluster's name, e.g. \"prod-us-east-1\"" .Values.clusterName | quote }}
             - name: CURRENCY
               value: {{ required "currency is required — the ISO 4217 code OpenCost is priced in, e.g. \"USD\" (never defaulted, see values.yaml)" .Values.currency | quote }}
+            {{- if .Values.pushIntervalMinutes }}
+            # Deprecated: switches the agent back to a fixed interval from process start. Leave
+            # unset to push once a day at pusher.schedule.utcTime.
             - name: PUSH_INTERVAL_MINUTES
               value: {{ .Values.pushIntervalMinutes | quote }}
+            {{- end }}
+            - name: PUSH_SCHEDULE_UTC
+              value: {{ .Values.pusher.schedule.utcTime | quote }}
+            - name: PUSH_JITTER_MINUTES
+              value: {{ .Values.pusher.schedule.jitterMinutes | quote }}
+            - name: CATCH_UP_DAYS
+              value: {{ .Values.pusher.catchUpDays | quote }}
+            - name: EMPTY_RESULT
+              value: {{ required "pusher.emptyResult must be \"fail\" or \"ignore\"" (has .Values.pusher.emptyResult (list "fail" "ignore") | ternary .Values.pusher.emptyResult "") | quote }}
             - name: METRICS_ADDR
               value: {{ printf ":%d" (int .Values.metricsPort) | quote }}
             - name: PLUTUS_API_KEY
@@ -68,9 +80,12 @@ spec:
               port: metrics
             initialDelaySeconds: 5
             periodSeconds: 30
+          # Readiness reports the data, liveness only the process: /readyz answers 503 while the
+          # last window came back empty, so `kubectl get pods` shows 0/1 for a data problem
+          # without the pod being restarted for it.
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: metrics
             initialDelaySeconds: 5
             periodSeconds: 30

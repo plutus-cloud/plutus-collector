@@ -80,6 +80,9 @@ type Source struct {
 
 func (s *Source) Name() string { return "Bifrost" }
 
+// EmptyIsHealthy: a gateway with no traffic in the window is a normal day, not a fault.
+func (s *Source) EmptyIsHealthy() bool { return true }
+
 func (s *Source) Collect(ctx context.Context, start, end time.Time, dateKey string) (any, int, error) {
 	entries, outside, notSuccess, err := s.Logs.FetchLogs(ctx, start, end)
 	if err != nil {

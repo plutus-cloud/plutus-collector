@@ -40,9 +40,9 @@ jobs:
         with:
           version: v3.16.4
       # helm lint needs the OpenCost subchart present to fully render, same as a real install —
-      # helm dependency update pulls it fresh rather than vendoring the .tgz into git (see
-      # ../.gitignore's chart/charts/ rule).
+      # helm dependency build fetches the exact version pinned in the committed Chart.lock rather
+      # than vendoring the .tgz into git (see ../.gitignore's chart/charts/ rule).
       - working-directory: ./chart
         run: |
-          helm dependency update
+          helm dependency build
           helm lint . --set clusterName=ci-test --set currency=USD --set apiKey=ci-test-key
