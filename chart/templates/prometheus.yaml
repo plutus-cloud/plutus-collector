@@ -175,10 +175,20 @@ spec:
               readOnly: true
             - name: data
               mountPath: /data
+            {{- if $b.kubeletTLS.caSecret }}
+            - name: kubelet-ca
+              mountPath: /etc/kubelet-ca
+              readOnly: true
+            {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ $name }}
+        {{- if $b.kubeletTLS.caSecret }}
+        - name: kubelet-ca
+          secret:
+            secretName: {{ $b.kubeletTLS.caSecret }}
+        {{- end }}
         - name: data
           {{- if $pvc }}
           persistentVolumeClaim:

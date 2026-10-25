@@ -118,6 +118,16 @@ grep -q "CURRENT_CLUSTER_ID_FILTER_ENABLED" "$tmp/external-multicluster.yaml" ||
 grep -q "kind: ServiceMonitor" "$tmp/external-multicluster.yaml" || fail "external-multicluster did not render its ServiceMonitor"
 grep -q "kind: Deployment" "$tmp/opencost-disabled.yaml" && grep -q "name: plutus-collector-opencost" "$tmp/opencost-disabled.yaml" && fail "opencost-disabled renders OpenCost"
 
+# Kubelet TLS: skipping verification is the explicit default; the verified shapes must verify.
+grep -q "insecure_skip_verify: true" "$tmp/default.yaml" || fail "default render does not show the kubelet verification skip it documents"
+for n in kubelet-tls-verified kubelet-tls-custom-ca; do
+  grep -q "insecure_skip_verify" "$tmp/$n.yaml" && fail "$n still skips kubelet verification"
+  grep -q "ca_file:" "$tmp/$n.yaml" || fail "$n renders no ca_file for the kubelet"
+done
+grep -q "ca_file: /etc/kubelet-ca/ca.pem" "$tmp/kubelet-tls-custom-ca.yaml" || fail "kubelet-tls-custom-ca does not use the supplied CA"
+grep -q "secretName: kubelet-ca" "$tmp/kubelet-tls-custom-ca.yaml" || fail "kubelet-tls-custom-ca does not mount the supplied CA"
+grep -q "ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt" "$tmp/kubelet-tls-verified.yaml" || fail "kubelet-tls-verified does not use the cluster CA"
+
 if [ "$failures" -gt 0 ]; then
   echo "$failures chart test failure(s)" >&2
   exit 1

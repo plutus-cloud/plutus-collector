@@ -55,7 +55,6 @@ data:
         metrics_path: /metrics/cadvisor
         authorization:
           credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
-        # Kubelet serving certificates are commonly self-signed and not issued for the node IP.
         tls_config:
           ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
           insecure_skip_verify: true
@@ -499,7 +498,7 @@ spec:
         app.kubernetes.io/instance: plutus-collector
         app.kubernetes.io/component: prometheus
       annotations:
-        checksum/config: 5a1d572deac3e44eb5ae8dedddf610b45ee4d30c7233a1a3930445c6351dd51a
+        checksum/config: cc8884b0ddc5f1a4b13a4bbffa1fcdf2359f1917644b4b608092f35db3b62bdb
     spec:
       serviceAccountName: plutus-collector-prometheus
       automountServiceAccountToken: true

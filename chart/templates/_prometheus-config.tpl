@@ -5,6 +5,9 @@ Called with a dict: root, cfg.
 */}}
 {{- define "plutus-collector.prometheusConfig" -}}
 {{- $b := .cfg.prometheus.bundled -}}
+{{- /* The kubelet's serving certificate is verified against this CA unless verification is turned off. */ -}}
+{{- $caFile := "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt" -}}
+{{- if $b.kubeletTLS.caSecret -}}{{- $caFile = printf "/etc/kubelet-ca/%s" $b.kubeletTLS.caKey -}}{{- end -}}
 {{- $ocName := printf "%s-opencost" (include "plutus-collector.fullname" .root) -}}
 global:
   scrape_interval: {{ $b.scrapeInterval }}
@@ -24,10 +27,11 @@ scrape_configs:
     metrics_path: /metrics/cadvisor
     authorization:
       credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
-    # Kubelet serving certificates are commonly self-signed and not issued for the node IP.
     tls_config:
-      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      ca_file: {{ $caFile }}
+{{- if $b.kubeletTLS.insecureSkipVerify }}
       insecure_skip_verify: true
+{{- end }}
     kubernetes_sd_configs:
       - role: node
     relabel_configs:
@@ -45,8 +49,10 @@ scrape_configs:
     authorization:
       credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
     tls_config:
-      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      ca_file: {{ $caFile }}
+{{- if $b.kubeletTLS.insecureSkipVerify }}
       insecure_skip_verify: true
+{{- end }}
     kubernetes_sd_configs:
       - role: node
     metric_relabel_configs:

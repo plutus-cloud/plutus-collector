@@ -17,6 +17,15 @@ pod being rescheduled to another node, which loses the history it holds. Set
 prometheus.bundled.storage.type=pvc to keep it (the pod stays Pending if the cluster has no
 default StorageClass).
 {{- end }}
+{{- if $c.prometheus.bundled.kubeletTLS.insecureSkipVerify }}
+
+Security: the bundled Prometheus scrapes each node's kubelet over HTTPS with its service account
+token and does not verify the kubelet's certificate (prometheus.bundled.kubeletTLS.insecureSkipVerify
+is true), because kubelet certificates are self-signed on kubeadm and k3s clusters. Anyone who can
+intercept pod-to-node traffic could read that token and the usage metrics. Where the kubelet
+certificates are signed by your cluster CA, set it to false; for another CA, also set
+prometheus.bundled.kubeletTLS.caSecret.
+{{- end }}
 {{- end }}
 {{- if eq $c.prometheus.mode "none" }}
 
