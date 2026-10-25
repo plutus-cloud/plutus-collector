@@ -17,12 +17,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"strings"
 	"time"
 
 	"github.com/plutus-cloud/plutus-collector/internal/ingest"
 	"github.com/plutus-cloud/plutus-collector/internal/metrics"
+	"github.com/plutus-cloud/plutus-collector/internal/preflight"
 )
 
 // Source produces one window's payload for whatever system this collector reads.
@@ -53,6 +55,8 @@ type CollectorMeta struct {
 	PrometheusMode string
 	WindowStart    time.Time
 	WindowEnd      time.Time
+	// EmptyReason, when set, replaces whatever reason the source put on an empty batch.
+	EmptyReason string
 	// Preflight is check id -> "ok" | "warn" | "error"; empty until preflight has run.
 	Preflight map[string]string
 }
@@ -63,9 +67,17 @@ type CollectorMeta struct {
 // endpoint and not something the pusher can assume for every source.
 //
 // Annotate returns payload with the block filled in, keeping anything the source already put in
-// it (an empty reason, for instance).
+// it (an empty reason, for instance). EmptyPayload builds a batch with no rows and the given
+// reason, for windows the pusher decides not to query at all.
 type Annotator interface {
 	Annotate(payload any, meta CollectorMeta) any
+	EmptyPayload(reason string) any
+}
+
+// Checker runs the preflight checks. oldestDayStart is the start of the oldest day this tick
+// would push, which the history check compares the store's oldest sample against.
+type Checker interface {
+	Run(ctx context.Context, oldestDayStart time.Time) *preflight.Report
 }
 
 // BatchPusher is the subset of ingest.Client's behavior the pusher needs — an interface so tests
@@ -112,6 +124,12 @@ type Config struct {
 	// Version and PrometheusMode are reported in the collector block.
 	Version        string
 	PrometheusMode string
+
+	// BlockOn lists the preflight check ids whose failure stops a push. PreflightInterval is how
+	// often the checks re-run between pushes (default 15 minutes), so readiness follows a fix
+	// within minutes rather than at the next daily push.
+	BlockOn           []string
+	PreflightInterval time.Duration
 }
 
 type Pusher struct {
@@ -120,6 +138,9 @@ type Pusher struct {
 	Metrics *metrics.State
 	Config  Config
 	Logger  *slog.Logger
+
+	// Preflight is optional; nil disables the checks.
+	Preflight Checker
 
 	// Now and Sleep are overridable for tests; default to time.Now / time.Sleep.
 	Now   func() time.Time
@@ -133,6 +154,11 @@ type Pusher struct {
 	pushed map[string]bool
 	// emptyDays records, per date, whether the last attempt came back empty.
 	emptyDays map[string]bool
+
+	// report is the preflight outcome for the run in progress; lastHadError is whether the most
+	// recent preflight of any kind had an error, to detect recovery.
+	report       *preflight.Report
+	lastHadError bool
 }
 
 func New(source Source, ingestClient BatchPusher, m *metrics.State, cfg Config, logger *slog.Logger) *Pusher {
@@ -161,17 +187,20 @@ type Window struct {
 
 // Outcome is what happened to one window.
 type Outcome struct {
-	Window  Window
-	Rows    int
-	Empty   bool
+	Window Window
+	Rows   int
+	Empty  bool
+	// EmptyOK is set with Empty when the empty window is not a fault: the source allows it, or
+	// the metrics store holds no data for the window yet.
+	EmptyOK bool
 	Skipped bool
 	Err     error
 }
 
 // Failed reports whether the outcome should make a one-shot run exit non-zero: an error, or an
-// empty window the source considers a fault.
-func (o Outcome) Failed(s Source) bool {
-	return o.Err != nil || (o.Empty && !s.EmptyIsHealthy())
+// empty window that is a fault.
+func (o Outcome) Failed() bool {
+	return o.Err != nil || (o.Empty && !o.EmptyOK)
 }
 
 // Run blocks, ticking immediately and then on the configured schedule (or every PushInterval
@@ -183,6 +212,19 @@ func (p *Pusher) Run(ctx context.Context) {
 	if p.Config.Schedule == nil {
 		ticker = time.NewTicker(p.Config.PushInterval)
 		defer ticker.Stop()
+	}
+
+	// Between pushes the checks re-run on a short interval, so readiness and the preflight
+	// metric follow a fix within minutes instead of staying red until the next daily push.
+	var recheck <-chan time.Time
+	if p.Preflight != nil {
+		interval := p.Config.PreflightInterval
+		if interval <= 0 {
+			interval = 15 * time.Minute
+		}
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		recheck = t.C
 	}
 
 	for {
@@ -197,15 +239,26 @@ func (p *Pusher) Run(ctx context.Context) {
 			wait = timer.C
 		}
 
-		select {
-		case <-ctx.Done():
-			if timer != nil {
-				timer.Stop()
+		for fired := false; !fired; {
+			select {
+			case <-ctx.Done():
+				if timer != nil {
+					timer.Stop()
+				}
+				p.Logger.Info("shutting down pusher loop", "reason", ctx.Err())
+				return
+			case <-recheck:
+				// A pipeline that has just recovered gets an immediate catch-up pass: days that
+				// came back empty or were blocked are retried now rather than at the next
+				// schedule.
+				if p.refreshPreflight(ctx) {
+					p.Logger.Info("preflight checks recovered, retrying days that were not delivered")
+					p.tick(ctx)
+				}
+			case <-wait:
+				p.tick(ctx)
+				fired = true
 			}
-			p.Logger.Info("shutting down pusher loop", "reason", ctx.Err())
-			return
-		case <-wait:
-			p.tick(ctx)
 		}
 	}
 }
@@ -213,6 +266,48 @@ func (p *Pusher) Run(ctx context.Context) {
 func (p *Pusher) tick(ctx context.Context) {
 	windows := ClosedDayWindows(p.Now(), p.Config.CatchUpDays)
 	p.runWindows(ctx, windows, false)
+}
+
+// refreshPreflight runs the checks outside a push, updating readiness and metrics, and reports
+// whether the previous run had errors and this one has none.
+func (p *Pusher) refreshPreflight(ctx context.Context) (recovered bool) {
+	windows := ClosedDayWindows(p.Now(), p.Config.CatchUpDays)
+	hadError := p.lastHadError
+	rep := p.runPreflight(ctx, windows)
+	return hadError && rep != nil && !rep.HasError()
+}
+
+// runPreflight executes the checks once, logs what they found, and publishes the outcome to the
+// metrics. It returns nil when preflight is not configured.
+func (p *Pusher) runPreflight(ctx context.Context, windows []Window) *preflight.Report {
+	if p.Preflight == nil || len(windows) == 0 {
+		return nil
+	}
+	rep := p.Preflight.Run(ctx, windows[0].Start)
+	for _, f := range rep.Failures() {
+		level := slog.LevelWarn
+		if f.Severity == preflight.Error {
+			level = slog.LevelError
+		}
+		p.Logger.Log(ctx, level, "preflight check did not pass", "check", f.ID, "severity", f.Severity, "msg", f.Message, "remedy", f.Remedy)
+	}
+	p.Metrics.SetPreflight(rep.Summary())
+	p.lastHadError = rep.HasError()
+
+	// How much of the newest window the store covers, 0 to 1. Unknown history leaves it unset.
+	if newest := windows[len(windows)-1]; !rep.OldestSample.IsZero() {
+		covered := newest.End.Sub(maxTime(rep.OldestSample, newest.Start))
+		ratio := float64(covered) / float64(newest.End.Sub(newest.Start))
+		p.Metrics.SetWindowCoverage(math.Max(0, math.Min(1, ratio)))
+	}
+	return rep
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
 
 // RunOnce processes exactly the given windows and returns what happened to each, for the
@@ -223,7 +318,15 @@ func (p *Pusher) RunOnce(ctx context.Context, windows []Window) []Outcome {
 }
 
 func (p *Pusher) runWindows(ctx context.Context, windows []Window, force bool) []Outcome {
+	p.report = p.runPreflight(ctx, windows)
 	outcomes := make([]Outcome, 0, len(windows))
+
+	if p.report != nil {
+		if blockers := p.report.Blocking(p.Config.BlockOn); len(blockers) > 0 {
+			return p.blocked(ctx, windows, blockers)
+		}
+	}
+
 	for i, w := range windows {
 		if ctx.Err() != nil {
 			break
@@ -237,10 +340,64 @@ func (p *Pusher) runWindows(ctx context.Context, windows []Window, force bool) [
 	return outcomes
 }
 
+// blocked handles a run that a blocking preflight check stopped. Nothing is queried or pushed,
+// because the data would be wrong rather than missing (other clusters' costs attributed to this
+// one); the newest window still gets a heartbeat naming the check, so Plutus can show why.
+func (p *Pusher) blocked(ctx context.Context, windows []Window, blockers []preflight.Result) []Outcome {
+	ids := make([]string, 0, len(blockers))
+	for _, b := range blockers {
+		ids = append(ids, b.ID)
+	}
+	err := fmt.Errorf("push blocked by preflight check %s", strings.Join(ids, ", "))
+	p.Logger.Error("not pushing: a blocking preflight check failed", "checks", ids, "remedy", blockers[0].Remedy)
+	p.Metrics.RecordFailure(err, 0)
+
+	outcomes := make([]Outcome, 0, len(windows))
+	for _, w := range windows {
+		outcomes = append(outcomes, Outcome{Window: w, Err: err})
+	}
+	if a, ok := p.Source.(Annotator); ok && len(windows) > 0 {
+		newest := windows[len(windows)-1]
+		payload := a.Annotate(a.EmptyPayload("preflight_blocked:"+ids[0]), p.meta(newest, ""))
+		if _, perr := p.pushWithRetry(ctx, payload); perr != nil {
+			p.Logger.Error("heartbeat push failed after exhausting retries", "date", newest.DateKey, "error", perr)
+		}
+	}
+	return outcomes
+}
+
+// meta builds the collector block contents for a window.
+func (p *Pusher) meta(w Window, emptyReason string) CollectorMeta {
+	m := CollectorMeta{
+		Version:        p.Config.Version,
+		PrometheusMode: p.Config.PrometheusMode,
+		WindowStart:    w.Start,
+		WindowEnd:      w.End,
+		EmptyReason:    emptyReason,
+	}
+	if p.report != nil {
+		m.Preflight = p.report.Summary()
+	}
+	return m
+}
+
+// beforeHistory reports whether the metrics store is known to hold nothing at or after the
+// window's start, so querying it cannot return data.
+func (p *Pusher) beforeHistory(w Window) bool {
+	return p.report != nil && !p.report.OldestSample.IsZero() && !p.report.OldestSample.Before(w.End)
+}
+
 func (p *Pusher) processWindow(ctx context.Context, w Window, newest, force bool) Outcome {
 	out := Outcome{Window: w}
 
 	if !force && p.pushed[w.DateKey] {
+		out.Skipped = true
+		return out
+	}
+	// A catch-up day from before the store's oldest sample cannot have data. It is skipped
+	// rather than queried and counted as empty; the newest window is always processed so the
+	// heartbeat still goes out.
+	if !force && !newest && p.beforeHistory(w) {
 		out.Skipped = true
 		return out
 	}
@@ -262,7 +419,7 @@ func (p *Pusher) processWindow(ctx context.Context, w Window, newest, force bool
 	}
 
 	delete(p.emptyDays, w.DateKey)
-	payload = p.annotate(payload, w)
+	payload = p.annotate(payload, w, "")
 
 	p.Logger.Info("pushing batch", "source", p.Source.Name(), "date", w.DateKey, "row_count", rowCount)
 
@@ -308,11 +465,24 @@ func (p *Pusher) processWindow(ctx context.Context, w Window, newest, force bool
 func (p *Pusher) handleEmpty(ctx context.Context, w Window, payload any, newest bool, started time.Time, out Outcome) Outcome {
 	out.Empty = true
 	healthy := p.Source.EmptyIsHealthy()
+	reason := ""
+	// A store that only started holding OpenCost's series after this window ended has nothing
+	// to return for it, which is what the first day after an install looks like. That is not a
+	// fault, and it must not make a fresh install report unready.
+	noHistory := p.beforeHistory(w)
+	if noHistory {
+		healthy = true
+		reason = "no_history"
+	}
+	out.EmptyOK = healthy
 	p.emptyDays[w.DateKey] = true
 	p.Metrics.RecordEmpty(healthy, p.Now().Sub(started))
 
 	consecutive := p.consecutiveEmpty(w.Start)
 	switch {
+	case noHistory:
+		p.Logger.Info("the metrics store holds no data for this window yet; the first complete day will appear after it has run for a full UTC day",
+			"source", p.Source.Name(), "date", w.DateKey, "oldest_sample", p.report.OldestSample)
 	case healthy:
 		p.Logger.Info("nothing to push for this window", "source", p.Source.Name(), "date", w.DateKey)
 	case newest && consecutive >= 2:
@@ -325,7 +495,7 @@ func (p *Pusher) handleEmpty(ctx context.Context, w Window, payload any, newest 
 		return out
 	}
 
-	payload = p.annotate(payload, w)
+	payload = p.annotate(payload, w, reason)
 	if _, err := p.pushWithRetry(ctx, payload); err != nil {
 		p.Metrics.RecordFailure(err, p.Now().Sub(started))
 		p.Logger.Error("heartbeat push failed after exhausting retries", "date", w.DateKey, "error", err)
@@ -336,17 +506,12 @@ func (p *Pusher) handleEmpty(ctx context.Context, w Window, payload any, newest 
 	return out
 }
 
-func (p *Pusher) annotate(payload any, w Window) any {
+func (p *Pusher) annotate(payload any, w Window, emptyReason string) any {
 	a, ok := p.Source.(Annotator)
 	if !ok || payload == nil {
 		return payload
 	}
-	return a.Annotate(payload, CollectorMeta{
-		Version:        p.Config.Version,
-		PrometheusMode: p.Config.PrometheusMode,
-		WindowStart:    w.Start,
-		WindowEnd:      w.End,
-	})
+	return a.Annotate(payload, p.meta(w, emptyReason))
 }
 
 // consecutiveEmpty counts empty days walking back from the day starting at newest. A day this

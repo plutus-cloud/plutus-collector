@@ -100,6 +100,10 @@ type OpenCostConfig struct {
 	// "external" (one you run; the default for a standalone binary) or "none" (OpenCost's
 	// built-in collector data source). Reported to Plutus; it changes nothing locally.
 	PrometheusMode string
+
+	// Prometheus and Preflight configure the checks that run before a push. See preflight.go.
+	Prometheus PrometheusConfig
+	Preflight  PreflightConfig
 }
 
 // LiteLLMConfig is Common plus what the LiteLLM collector needs.
@@ -293,6 +297,8 @@ func LoadOpenCost(getenv func(string) string) (*OpenCostConfig, error) {
 	default:
 		errs = append(errs, fmt.Sprintf("PROMETHEUS_MODE must be bundled, external or none, got %q", cfg.PrometheusMode))
 	}
+	cfg.Prometheus = loadPrometheus(getenv, &errs)
+	cfg.Preflight = loadPreflight(getenv, &errs)
 
 	if cfg.ClusterName == "" {
 		errs = append(errs, "CLUSTER_NAME is required (no default)")

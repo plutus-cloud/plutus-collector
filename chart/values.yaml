@@ -39,6 +39,26 @@ pusher:
   # ignore: treat it as normal.
   emptyResult: fail
 
+preflight:
+  # Checks that the data behind OpenCost is there (OpenCost's series in the metrics store,
+  # container usage, one cluster per store, history, allocations) at startup, before each push
+  # and every 15 minutes, and reports the result in /readyz, in /metrics and in the log.
+  enabled: true
+  # Check ids whose failure stops a push instead of only being reported. cluster_ambiguity
+  # refuses to push when the store holds several clusters and no label tells them apart, because
+  # their costs would be attributed to this one. Use [] to block nothing.
+  blockPushOn:
+    - cluster_ambiguity
+  # `helm test <release>` runs the checks once and fails with the reason.
+  helmTest: true
+  # The metrics store the checks query. Empty means the one OpenCost is configured to use
+  # (opencost.opencost.prometheus.*, or OpenCost's default when that is unset).
+  prometheusUrl: ""
+  # The label that identifies this cluster in a store shared by several. Its values must equal
+  # clusterName. OpenCost must be told the same (PROM_CLUSTER_ID_LABEL and
+  # CURRENT_CLUSTER_ID_FILTER_ENABLED, through the OpenCost subchart's extraEnv).
+  clusterLabel: ""
+
 # Deprecated. Leave null to use pusher.schedule. When set (minutes), the agent returns to a
 # fixed interval counted from process start and pusher.schedule is not used.
 pushIntervalMinutes: null

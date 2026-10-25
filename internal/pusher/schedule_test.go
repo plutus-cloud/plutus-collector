@@ -226,13 +226,13 @@ func TestRunOnce_ReportsFailureForEmptyWindowOnlyWhereThatIsAFault(t *testing.T)
 
 	fault := newTestPusher(&fakeSource{}, &fakePusher{})
 	out := fault.RunOnce(context.Background(), []Window{w})
-	if len(out) != 1 || !out[0].Failed(fault.Source) {
+	if len(out) != 1 || !out[0].Failed() {
 		t.Errorf("an empty window should fail a one-shot run: %+v", out)
 	}
 
 	ok := newTestPusher(&fakeSource{emptyOK: true}, &fakePusher{})
 	out = ok.RunOnce(context.Background(), []Window{w})
-	if len(out) != 1 || out[0].Failed(ok.Source) {
+	if len(out) != 1 || out[0].Failed() {
 		t.Errorf("an empty window is fine for a source that allows it: %+v", out)
 	}
 }

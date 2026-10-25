@@ -45,12 +45,13 @@ spec:
               containerPort: {{ .Values.metricsPort }}
               protocol: TCP
           env:
-            - name: OPENCOST_URL
-              value: {{ include "plutus-collector.openCostUrl" . | quote }}
+            {{- include "plutus-collector.preflightEnv" . | nindent 12 }}
+            - name: PREFLIGHT_ENABLED
+              value: {{ .Values.preflight.enabled | quote }}
+            - name: PREFLIGHT_BLOCK_ON
+              value: {{ join "," .Values.preflight.blockPushOn | default "none" | quote }}
             - name: PLUTUS_INGEST_URL
               value: {{ required "plutusIngestUrl is required" .Values.plutusIngestUrl | quote }}
-            - name: CLUSTER_NAME
-              value: {{ required "clusterName is required — set it to this cluster's name, e.g. \"prod-us-east-1\"" .Values.clusterName | quote }}
             - name: CURRENCY
               value: {{ required "currency is required — the ISO 4217 code OpenCost is priced in, e.g. \"USD\" (never defaulted, see values.yaml)" .Values.currency | quote }}
             {{- if .Values.pushIntervalMinutes }}
@@ -63,8 +64,6 @@ spec:
               value: {{ .Values.pusher.schedule.utcTime | quote }}
             - name: PUSH_JITTER_MINUTES
               value: {{ .Values.pusher.schedule.jitterMinutes | quote }}
-            - name: CATCH_UP_DAYS
-              value: {{ .Values.pusher.catchUpDays | quote }}
             - name: EMPTY_RESULT
               value: {{ required "pusher.emptyResult must be \"fail\" or \"ignore\"" (has .Values.pusher.emptyResult (list "fail" "ignore") | ternary .Values.pusher.emptyResult "") | quote }}
             - name: METRICS_ADDR

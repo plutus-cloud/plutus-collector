@@ -55,8 +55,19 @@ type annotated struct {
 }
 
 func (a *annotatingSource) Annotate(payload any, meta CollectorMeta) any {
+	if prior, ok := payload.(annotated); ok {
+		// Like the real source, keep a reason the payload already carries.
+		if meta.EmptyReason == "" {
+			meta.EmptyReason = prior.Meta.EmptyReason
+		}
+		return annotated{Inner: prior.Inner, Meta: meta}
+	}
 	p, _ := payload.(testPayload)
 	return annotated{Inner: p, Meta: meta}
+}
+
+func (a *annotatingSource) EmptyPayload(reason string) any {
+	return annotated{Meta: CollectorMeta{EmptyReason: reason}}
 }
 
 func oneRowSource() *fakeSource {

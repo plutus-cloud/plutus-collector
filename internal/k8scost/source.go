@@ -42,6 +42,17 @@ func (s *Source) Name() string { return "OpenCost" }
 
 func (s *Source) EmptyIsHealthy() bool { return s.EmptyOK }
 
+// EmptyPayload is a batch with no rows and the given reason, for a window that was deliberately
+// not queried.
+func (s *Source) EmptyPayload(reason string) any {
+	return Batch{
+		ClusterName: s.ClusterName,
+		Currency:    s.Currency,
+		Rows:        []Row{},
+		Collector:   &Collector{EmptyReason: reason},
+	}
+}
+
 // Annotate fills the batch's collector block from what the pusher knows, keeping an empty reason
 // the source already set. Implementing it is also what tells the pusher this endpoint accepts a
 // heartbeat: Plutus's kubernetes-cost ingest writes nothing for rows: [].
@@ -53,6 +64,9 @@ func (s *Source) Annotate(payload any, meta pusher.CollectorMeta) any {
 	c := Collector{}
 	if batch.Collector != nil {
 		c = *batch.Collector
+	}
+	if meta.EmptyReason != "" {
+		c.EmptyReason = meta.EmptyReason
 	}
 	c.Version = meta.Version
 	c.PrometheusMode = meta.PrometheusMode

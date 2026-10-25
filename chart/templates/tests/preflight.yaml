@@ -1,0 +1,43 @@
+{{/*
+`helm test <release>` runs the same checks the agent runs before a push, once, and fails with the
+reason: unreachable or unauthorised metrics store, OpenCost's series missing from it, several
+clusters in one store, OpenCost computing nothing. The agent image already contains the
+subcommand, so there is no extra image, and nothing here needs the Plutus API key.
+*/}}
+{{- if and .Values.preflight.enabled .Values.preflight.helmTest }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "plutus-collector.fullname" . }}-preflight
+  labels:
+    {{- include "plutus-collector.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: preflight
+      image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      args: ["preflight"]
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      env:
+        {{- include "plutus-collector.preflightEnv" . | nindent 8 }}
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 64Mi
+{{- end }}

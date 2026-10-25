@@ -219,6 +219,31 @@ successful push of nothing:
 A heartbeat writes and deletes no cost rows. `EMPTY_RESULT=ignore` turns the failure behaviour
 off for clusters where an empty day really is normal; the heartbeat is still sent.
 
+#### Preflight checks
+
+The agent checks the data behind OpenCost at startup, before each push and every 15 minutes: the
+metrics store answers, OpenCost's series are in it, container usage is present, the store holds
+one cluster, it holds enough history, and OpenCost computes allocations from all of that. Results
+are logged with the fix (`check=<id> remedy=...`), exported as
+`plutus_collector_preflight_ok{check="<id>"}`, sent to Plutus in the heartbeat's `preflight` block,
+and any check at `error` severity makes `/readyz` return 503. Run them by hand:
+
+```bash
+helm test plutus-collector -n plutus-collector
+kubectl -n plutus-collector exec deploy/plutus-collector -- /plutus-collector preflight
+```
+
+Check ids: `prometheus_reachable`, `opencost_series`, `allocation_series`, `pods_running`,
+`pod_labels`, `namespace_labels`, `controller_labels`, `usage_series`, `cluster_ambiguity`,
+`history`, `opencost_reachable`, `allocation_nonempty`, `pricing`. The agent finds the store from
+the same `opencost.opencost.prometheus.*` values OpenCost uses (override with
+`preflight.prometheusUrl`). `cluster_ambiguity` blocks the push by default: when one store holds
+several clusters and nothing tells them apart, their costs would be attributed to this cluster.
+Set `preflight.clusterLabel` and configure OpenCost's `PROM_CLUSTER_ID_LABEL` to the same label.
+
+A window that ended before the store's first OpenCost sample (the day an install happened) is
+reported as `empty_reason: "no_history"` and is not a fault.
+
 #### One-off pushes
 
 `plutus-collector --once` does one pass and exits non-zero if any window failed or came back
