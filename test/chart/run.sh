@@ -118,6 +118,18 @@ grep -q "CURRENT_CLUSTER_ID_FILTER_ENABLED" "$tmp/external-multicluster.yaml" ||
 grep -q "kind: ServiceMonitor" "$tmp/external-multicluster.yaml" || fail "external-multicluster did not render its ServiceMonitor"
 grep -q "kind: Deployment" "$tmp/opencost-disabled.yaml" && grep -q "name: plutus-collector-opencost" "$tmp/opencost-disabled.yaml" && fail "opencost-disabled renders OpenCost"
 
+# Network policy: ingress only, on by default, absent where the peers are not known.
+[ "$(grep -c '^kind: NetworkPolicy' "$tmp/default.yaml")" = 2 ] || fail "default render should have a NetworkPolicy for Prometheus and one for OpenCost"
+grep -q "Egress" "$tmp/default.yaml" && fail "network policies must not restrict egress"
+for n in external-basic external-grafana-cloud external-mtls external-multicluster opencost-disabled; do
+  grep -q "kind: NetworkPolicy" "$tmp/$n.yaml" && fail "$n renders a NetworkPolicy although the scraper is not known"
+done
+[ "$(grep -c '^kind: NetworkPolicy' "$tmp/mode-none.yaml")" = 1 ] || fail "mode none should have only the OpenCost policy"
+[ "$(grep -c 'kubernetes.io/metadata.name: monitoring' "$tmp/network-policy-extra.yaml")" = 2 ] || fail "extraIngress is not appended to both policies"
+helm template plutus-collector "$chart" --set clusterName=c --set currency=USD --set apiKey=k --set networkPolicy.enabled=false | grep -q "kind: NetworkPolicy" && fail "networkPolicy.enabled=false still renders policies"
+# The helm test pod must be matched by the policies' pusher peer: same selector labels, no component.
+awk '/^kind: Pod/{p=1} p&&/app.kubernetes.io\/component/{bad=1} END{exit bad}' "$tmp/default.yaml" || fail "the helm test pod carries a component label, so the network policies would block it"
+
 # Kubelet TLS: skipping verification is the explicit default; the verified shapes must verify.
 grep -q "insecure_skip_verify: true" "$tmp/default.yaml" || fail "default render does not show the kubelet verification skip it documents"
 for n in kubelet-tls-verified kubelet-tls-custom-ca; do

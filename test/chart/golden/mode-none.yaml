@@ -1,4 +1,36 @@
 ---
+# Source: plutus-collector/templates/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: plutus-collector-opencost
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: opencost
+    app.kubernetes.io/managed-by: Helm
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: plutus-collector
+      app.kubernetes.io/instance: plutus-collector
+      app.kubernetes.io/component: opencost
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: plutus-collector
+              app.kubernetes.io/instance: plutus-collector
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: DoesNotExist
+      ports:
+        - port: 9003
+          protocol: TCP
+
+---
 # Source: plutus-collector/templates/opencost.yaml
 apiVersion: v1
 kind: ServiceAccount

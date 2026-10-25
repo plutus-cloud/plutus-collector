@@ -1,0 +1,16 @@
+# A scraper in another namespace is allowed to reach OpenCost and Prometheus in addition to the
+# chart's own pods.
+clusterName: prod-us-east-1
+currency: USD
+apiKey: test-api-key
+networkPolicy:
+  extraIngress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9003
+          protocol: TCP
+        - port: 9090
+          protocol: TCP

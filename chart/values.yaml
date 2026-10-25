@@ -223,6 +223,20 @@ prometheus:
       size: 2Gi
       storageClass: ""
 
+# --- Network policy ------------------------------------------------------------------------------
+# Ingress policies for the components this chart renders, because the bundled Prometheus and
+# OpenCost serve cluster-wide telemetry with no authentication. The Prometheus port accepts only
+# OpenCost and the pusher; the OpenCost port accepts only the bundled Prometheus and the pusher.
+# Egress is not restricted. Kubernetes only enforces NetworkPolicy when the cluster's network
+# plugin does (Calico, Cilium and others do; flannel on its own does not), so on a cluster
+# without enforcement this has no effect. With prometheus.mode=external the OpenCost policy is not
+# rendered, because the scraper is yours and unknown; add a policy for it yourself.
+networkPolicy:
+  enabled: true
+  # Extra NetworkPolicyIngressRule entries appended to both policies, for peers you add (a
+  # Grafana, an Alloy that scrapes the pusher is not affected: the pusher has no ingress policy).
+  extraIngress: []
+
 # --- The pusher pod --------------------------------------------------------------------------------
 podAnnotations: {}
 podLabels: {}

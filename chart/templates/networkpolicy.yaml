@@ -1,0 +1,79 @@
+{{/*
+Ingress policies for the components this chart renders. The bundled Prometheus and OpenCost serve
+cluster-wide telemetry with no authentication, so each accepts traffic only from the pods that
+need it: Prometheus from OpenCost (queries) and the pusher and `helm test` pods (preflight);
+OpenCost from Prometheus (scrapes) and the pusher. Egress is not restricted. Enforcement depends
+on the cluster's network plugin; without one these objects have no effect.
+
+The pusher pod and the helm test pod carry the release's selector labels and no component label,
+which is how they are told apart from OpenCost and Prometheus (they share the name and instance
+labels). With prometheus.mode=external the OpenCost policy is not rendered, because the scraper
+is the customer's and not known here.
+*/}}
+{{- $c := include "plutus-collector.cfg" . | fromYaml -}}
+{{- if and $c.networkPolicy.enabled $c.opencost.enabled (has $c.prometheus.mode (list "bundled" "none")) }}
+{{- $fullname := include "plutus-collector.fullname" . }}
+{{- $promCtx := dict "root" . "component" "prometheus" }}
+{{- $ocCtx := dict "root" . "component" "opencost" }}
+{{- if eq $c.prometheus.mode "bundled" }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-prometheus
+  labels:
+    {{- include "plutus-collector.componentLabels" $promCtx | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "plutus-collector.componentSelectorLabels" $promCtx | nindent 6 }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "plutus-collector.componentSelectorLabels" $ocCtx | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "plutus-collector.selectorLabels" . | nindent 14 }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: DoesNotExist
+      ports:
+        - port: 9090
+          protocol: TCP
+    {{- with $c.networkPolicy.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+---
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-opencost
+  labels:
+    {{- include "plutus-collector.componentLabels" $ocCtx | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "plutus-collector.componentSelectorLabels" $ocCtx | nindent 6 }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        {{- if eq $c.prometheus.mode "bundled" }}
+        - podSelector:
+            matchLabels:
+              {{- include "plutus-collector.componentSelectorLabels" $promCtx | nindent 14 }}
+        {{- end }}
+        - podSelector:
+            matchLabels:
+              {{- include "plutus-collector.selectorLabels" . | nindent 14 }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: DoesNotExist
+      ports:
+        - port: 9003
+          protocol: TCP
+    {{- with $c.networkPolicy.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
