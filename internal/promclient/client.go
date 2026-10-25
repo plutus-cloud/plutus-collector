@@ -143,8 +143,16 @@ func (c *Client) Query(ctx context.Context, expr string) ([]Sample, error) {
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		// url.Error echoes the request URL, which can carry a host the operator considers
-		// internal but never a credential (those are headers), so it is safe to keep.
+		// url.Error echoes the request URL. Config refuses userinfo in it, but this package can
+		// be built without that check, so any password is redacted here as well.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			if u, perr := url.Parse(ue.URL); perr == nil {
+				ue.URL = u.Redacted()
+			} else {
+				ue.URL = "(unparseable url)"
+			}
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()

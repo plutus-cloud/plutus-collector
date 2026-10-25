@@ -3,6 +3,7 @@ package opencost
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,7 +26,7 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("querying OpenCost at %s: %w", c.BaseURL, err)
+		return fmt.Errorf("querying OpenCost at %s: %w", redactURL(c.BaseURL), redactErr(err))
 	}
 	defer resp.Body.Close()
 
@@ -40,6 +41,24 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, out
 		return fmt.Errorf("parsing OpenCost response as JSON: %w", err)
 	}
 	return nil
+}
+
+// redactURL strips any password from a URL before it reaches an error string. Config refuses
+// credentials in OPENCOST_URL; this is the second line of defence.
+func redactURL(raw string) string {
+	if u, err := url.Parse(raw); err == nil {
+		return u.Redacted()
+	}
+	return "(unparseable url)"
+}
+
+// redactErr redacts the URL a *url.Error carries, which net/http echoes into its messages.
+func redactErr(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		ue.URL = redactURL(ue.URL)
+	}
+	return err
 }
 
 // CountAllocations returns how many priced allocations OpenCost computes for window ("1h",

@@ -137,6 +137,8 @@ func LoadPreflight(getenv func(string) string) (*PreflightSettings, error) {
 	}
 	if u, err := url.Parse(s.OpenCostURL); err != nil || u.Host == "" {
 		errs = append(errs, "OPENCOST_URL must be a well-formed URL with a host (value not echoed: it may contain credentials)")
+	} else {
+		rejectUserinfo("OPENCOST_URL", u, "", &errs)
 	}
 	if s.Prometheus.ClusterLabel != "" && s.ClusterName == "" {
 		errs = append(errs, "CLUSTER_NAME is required when PROMETHEUS_CLUSTER_LABEL is set (its value is what the label must equal)")

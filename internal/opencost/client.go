@@ -146,7 +146,7 @@ func (c *Client) ComputeAllocation(ctx context.Context, start, end time.Time) ([
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("querying OpenCost at %s: %w", c.BaseURL, err)
+		return nil, fmt.Errorf("querying OpenCost at %s: %w", redactURL(c.BaseURL), redactErr(err))
 	}
 	defer resp.Body.Close()
 
