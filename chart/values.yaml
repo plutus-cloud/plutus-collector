@@ -172,9 +172,8 @@ prometheus:
     # The default is to skip verification because kubelet serving certificates are self-signed
     # on kubeadm and k3s clusters; verifying by default would make the scrape fail there and
     # silently drop usage metrics (costs fall back to requests only). Set insecureSkipVerify to
-    # false where the kubelet certificates are signed by the cluster CA (EKS, GKE and AKS node
-    # certificates are, and kubeadm clusters with serverTLSBootstrap): the cluster CA mounted in
-    # every pod is then used. If they are signed by another CA, put its PEM in a Secret and name
+    # false where the kubelet certificates are signed by the cluster CA (check yours; the chart
+    # cannot tell): the cluster CA mounted in every pod is then used. If they are signed by another CA, put its PEM in a Secret and name
     # it in caSecret.
     kubeletTLS:
       insecureSkipVerify: true
@@ -233,8 +232,8 @@ prometheus:
 # rendered, because the scraper is yours and unknown; add a policy for it yourself.
 networkPolicy:
   enabled: true
-  # Extra NetworkPolicyIngressRule entries appended to both policies, for peers you add (a
-  # Grafana, an Alloy that scrapes the pusher is not affected: the pusher has no ingress policy).
+  # Extra NetworkPolicyIngressRule entries appended to both policies, for peers you add (for
+  # example a scraper in another namespace). The pusher pod has no ingress policy.
   extraIngress: []
 
 # --- The pusher pod --------------------------------------------------------------------------------

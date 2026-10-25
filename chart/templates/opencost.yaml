@@ -157,7 +157,7 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "plutus-collector.componentSelectorLabels" $ctx | nindent 8 }}
+        {{- include "plutus-collector.componentLabels" $ctx | nindent 8 }}
       {{- if $custom }}
       annotations:
         checksum/pricing: {{ toYaml $c.opencost.pricing.custom | sha256sum }}

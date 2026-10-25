@@ -6,16 +6,15 @@ metadata:
   name: plutus-collector-opencost
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: opencost
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: opencost
     app.kubernetes.io/managed-by: Helm
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: plutus-collector
+      app.kubernetes.io/name: opencost
       app.kubernetes.io/instance: plutus-collector
-      app.kubernetes.io/component: opencost
   policyTypes: ["Ingress"]
   ingress:
     - from:
@@ -38,7 +37,7 @@ metadata:
   name: plutus-collector-opencost
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: opencost
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: opencost
     app.kubernetes.io/managed-by: Helm
@@ -66,7 +65,7 @@ metadata:
   name: plutus-collector-opencost-pricing
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: opencost
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: opencost
     app.kubernetes.io/managed-by: Helm
@@ -90,7 +89,7 @@ metadata:
   name: plutus-collector-opencost-state
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: opencost
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: opencost
     app.kubernetes.io/managed-by: Helm
@@ -107,7 +106,7 @@ metadata:
   name: plutus-collector-opencost
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: opencost
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: opencost
     app.kubernetes.io/managed-by: Helm
@@ -158,7 +157,7 @@ metadata:
   name: plutus-collector-opencost
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: opencost
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: opencost
     app.kubernetes.io/managed-by: Helm
@@ -178,16 +177,15 @@ metadata:
   name: plutus-collector-opencost
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: opencost
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: opencost
     app.kubernetes.io/managed-by: Helm
 spec:
   type: ClusterIP
   selector:
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: opencost
     app.kubernetes.io/instance: plutus-collector
-    app.kubernetes.io/component: opencost
   ports:
     - name: http
       port: 9003
@@ -321,7 +319,7 @@ metadata:
   name: plutus-collector-opencost
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: opencost
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: opencost
     app.kubernetes.io/managed-by: Helm
@@ -333,15 +331,16 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      app.kubernetes.io/name: plutus-collector
+      app.kubernetes.io/name: opencost
       app.kubernetes.io/instance: plutus-collector
-      app.kubernetes.io/component: opencost
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: plutus-collector
+        helm.sh/chart: plutus-collector-0.1.0
+        app.kubernetes.io/name: opencost
         app.kubernetes.io/instance: plutus-collector
         app.kubernetes.io/component: opencost
+        app.kubernetes.io/managed-by: Helm
       annotations:
         checksum/pricing: bc9eddd6c6561d4b06406065b016c782ac01f8277cc808cf683f36b71d162c74
     spec:

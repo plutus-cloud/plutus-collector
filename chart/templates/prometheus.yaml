@@ -111,7 +111,7 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "plutus-collector.componentSelectorLabels" $ctx | nindent 8 }}
+        {{- include "plutus-collector.componentLabels" $ctx | nindent 8 }}
       annotations:
         checksum/config: {{ include "plutus-collector.prometheusConfig" (dict "root" . "cfg" $c) | sha256sum }}
     spec:
@@ -150,7 +150,6 @@ spec:
             - --storage.tsdb.retention.time={{ $b.retention }}
             - --storage.tsdb.retention.size={{ div (mul $mib 8) 10 }}MB
             - --web.listen-address=:9090
-            - --web.enable-lifecycle=false
           ports:
             - name: http
               containerPort: 9090

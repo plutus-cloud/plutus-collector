@@ -41,28 +41,41 @@ like everything else in the cluster. Same shape as every comparable in-cluster a
 
 ## Kubernetes collector (OpenCost)
 
-Everything in this section is specific to `plutus-collector`, the Kubernetes agent. The LiteLLM
-collector has its own section below; what the two genuinely share is under "All collectors".
+Everything in this section is specific to `plutus-collector`, the Kubernetes agent. The LiteLLM and
+Bifrost collectors have their own sections below; what the three share is under "All collectors".
+
+### What gets installed
+
+`helm install` puts three things in your cluster, in one namespace:
+
+| Component | What it is | Why |
+|---|---|---|
+| `plutus-collector` (the pusher) | this repository's agent, one pod | queries OpenCost once a day and pushes the result to Plutus |
+| OpenCost | one pod, rendered by this chart | computes cost per namespace, workload, pod and container |
+| a bundled Prometheus | one pod, rendered by this chart | the time-series store OpenCost reads from; it scrapes OpenCost and the kubelet's cAdvisor endpoint and keeps four days |
+
+OpenCost does not store the data it computes costs from. It reads container usage, requests, node
+prices and labels from a Prometheus-compatible store, so something has to provide one. By default
+this chart does, which is why a cluster with nothing pre-installed works. If you already run a
+Prometheus (or Mimir, Thanos, Grafana Cloud), you can point OpenCost at it instead:
+[Use your own Prometheus](#use-your-own-prometheus).
+
+There is no node-exporter and no kube-state-metrics (OpenCost emits the series it needs itself), so
+the bundled store is one pod per cluster, not one per node. The chart does not use the upstream
+OpenCost or Prometheus charts and installs no CRDs. It does not install the OpenCost UI or its MCP
+server.
 
 ### Prerequisites
 
-- A Kubernetes cluster (1.24+ is a safe assumption; nothing here needs anything exotic).
-- Helm 3.
-- **A Prometheus-compatible store that OpenCost can query, and that scrapes OpenCost.** OpenCost
-  computes costs from time series (container usage and requests, node prices, labels) that live
-  in Prometheus, and it does not store them itself. This chart installs OpenCost but **does not
-  install a Prometheus**. OpenCost's default endpoint is
-  `http://prometheus-server.prometheus-system.svc.cluster.local:80`; on a cluster without one
-  OpenCost never becomes ready and nothing is pushed. Where a Prometheus does answer but does not
-  scrape OpenCost's own `:9003` metrics, OpenCost is ready but has no cost data. Either way the
-  agent now says so: its pod stays `0/1` Ready, `plutus_collector_last_push_success` is `0` and
-  the log reports the empty window.
-- Either let this chart install OpenCost for you (default), or already run OpenCost yourself.
+- A Kubernetes cluster, 1.24 or later, and Helm 3.
+- Nothing else for the default install. For `prometheus.mode=external`, a Prometheus-compatible
+  store with a PromQL query API.
 - A Plutus account with the Kubernetes cost source added. In the Plutus UI: **Cost Sources →
-  Kubernetes → Generate API Key** — this mints the key and shows you the exact `helm install`
-  command below with your key already filled in. Generating or revoking this key requires an
-  account admin. You can also mint one via the API:
+  Kubernetes → Generate API Key**, which mints the key and shows the `helm install` command below
+  with your key filled in. Generating or revoking it requires an account admin. Via the API:
   `POST /api/accounts/:accountId/cost-sources/kubernetes/api-key`.
+- Egress from the cluster to `console.plutus-cloud.com` on 443, and to OpenCost's cloud pricing
+  sources if you want provider price lists (see Pricing).
 
 ### Quickstart
 
@@ -74,25 +87,27 @@ helm install plutus-collector oci://ghcr.io/plutus-cloud/charts/plutus-collector
   --set apiKey=<the key from the Plutus UI>
 ```
 
-This deploys OpenCost (bundled subchart) plus this pusher. It works when the cluster already has a
-Prometheus that scrapes OpenCost (see Prerequisites); point OpenCost at yours with the
-subchart's `opencost.opencost.prometheus.*` values. Cost data reaches Plutus after the first
-complete UTC day, on the daily push (01:30 UTC plus a random delay of up to 20 minutes).
-
-If you already run OpenCost:
+Then check it:
 
 ```bash
-helm install plutus-collector oci://ghcr.io/plutus-cloud/charts/plutus-collector \
-  --namespace plutus-collector --create-namespace \
-  --set opencost.enabled=false \
-  --set opencost.endpoint=http://opencost.your-namespace.svc.cluster.local:9003 \
-  --set clusterName=prod-us-east-1 \
-  --set currency=USD \
-  --set apiKey=<the key from the Plutus UI>
+helm test plutus-collector --namespace plutus-collector     # runs the preflight checks
+kubectl -n plutus-collector get pods                         # pusher 1/1 when its data checks pass
 ```
 
-Prefer not to put your API key in Helm values/history? Create the Secret yourself first and
-point the chart at it instead of `apiKey`:
+**When data appears.** OpenCost and the bundled Prometheus start collecting when they start. The
+agent pushes closed UTC days (01:30 UTC plus a random delay of up to 20 minutes), so the first
+complete day appears the day after install. A day the install happened part-way through is pushed
+as a partial day. Until then a pod that reports no data for a day that predates the install is
+expected and is not marked unready (`empty_reason: "no_history"`).
+
+**Footprint.** One extra pod for the bundled Prometheus (requests `50m` CPU and `256Mi`, limit
+`1Gi`) and one for OpenCost (`10m` and `128Mi`, limit `1Gi`), plus the pusher (`10m`, `32Mi`, limit
+`64Mi`). These are the chart's resource settings, not measurements. How much Prometheus and
+OpenCost actually use grows with the number of containers; `test/e2e/run.sh` prints their working
+set on a kind cluster, which is a check on the order of magnitude and not a sizing guide for your
+cluster.
+
+Prefer not to put your API key in Helm values/history? Create the Secret yourself first:
 
 ```bash
 kubectl create secret generic plutus-collector-key \
@@ -101,57 +116,162 @@ kubectl create secret generic plutus-collector-key \
 
 helm install plutus-collector oci://ghcr.io/plutus-cloud/charts/plutus-collector \
   --namespace plutus-collector --create-namespace \
-  --set clusterName=prod-us-east-1 \
-  --set currency=USD \
+  --set clusterName=prod-us-east-1 --set currency=USD \
   --set existingSecret=plutus-collector-key
 ```
 
-#### Uninstalling
+The agent image, and the OpenCost and Prometheus images the chart pins, are multi-architecture
+(amd64 and arm64), so the chart can run on Graviton and Ampere nodes. The kind end-to-end test runs
+on both architectures in CI.
+
+#### Where the Prometheus data lives
+
+By default the bundled Prometheus keeps its data in an `emptyDir`. That survives the container
+restarting but not the pod being rescheduled to another node, which loses the history it holds:
+the preflight reports the shorter history, and days that were not yet pushed are partial. To keep
+it, use a volume:
 
 ```bash
-helm uninstall plutus-collector --namespace plutus-collector
+--set prometheus.bundled.storage.type=pvc --set prometheus.bundled.storage.size=10Gi
 ```
 
-Revoking the API key in Plutus (Cost Sources → Kubernetes → Revoke) stops the agent from being
-able to push immediately, independent of whether you've uninstalled the chart yet — useful if
-you need to cut access off right away and tear down the cluster resources afterward.
+The pod then stays `Pending` on a cluster that has no default StorageClass; set
+`prometheus.bundled.storage.storageClass`. Retention is four days (`prometheus.bundled.retention`),
+which the chart requires to be at least `pusher.catchUpDays + 1` whole days.
+
+#### Pricing
+
+OpenCost prices CPU and memory from your cloud provider's price list when it can identify the
+provider. On a cluster it cannot identify (on-premises, Hetzner, and so on) it falls back to
+built-in default rates, so the dollar figures are an estimate shaped like a public-cloud price
+list. The preflight warns (`pricing`) when that is the case. Set your own rates:
+
+```yaml
+opencost:
+  pricing:
+    provider: custom
+    custom:
+      CPU: "0.012"      # per core-hour
+      RAM: "0.0016"     # per GB-hour
+      storage: "0.00005"
+```
+
+An air-gapped cluster that cannot reach the pricing sources behaves the same way.
+
+### Use your own Prometheus
+
+Set `prometheus.mode=external` and give OpenCost the store's query URL:
+
+```bash
+helm install plutus-collector oci://ghcr.io/plutus-cloud/charts/plutus-collector \
+  --namespace plutus-collector --create-namespace \
+  --set clusterName=prod-us-east-1 --set currency=USD --set apiKey=<key> \
+  --set prometheus.mode=external \
+  --set prometheus.external.url=http://prometheus-server.monitoring.svc:80
+```
+
+The chart then renders no Prometheus, and the store has to hold what OpenCost needs. This is the
+contract:
+
+1. **Everything OpenCost serves on `:9003/metrics`.** Scrape the `<release>-opencost` Service with
+   `honor_labels: true` at 60 seconds or faster. If you filter, keep at least:
+   `container_cpu_allocation`, `container_memory_allocation_bytes`, `container_gpu_allocation`,
+   `node_cpu_hourly_cost`, `node_ram_hourly_cost`, `node_gpu_hourly_cost`,
+   `node_total_hourly_cost`, `kubecost_node_is_spot`, `kube_pod_container_status_running`,
+   `kube_pod_container_resource_requests`, `kube_pod_labels`, `kube_namespace_labels`,
+   `kube_pod_owner`, `deployment_match_labels`, `statefulSet_match_labels`,
+   `service_selector_labels`, `pv_hourly_cost`, `kubecost_pv_info`, `pod_pvc_allocation`,
+   `kube_persistentvolumeclaim_info`, `kube_persistentvolume_capacity_bytes`,
+   `kube_persistentvolumeclaim_resource_requests_storage_bytes`, `kubecost_load_balancer_cost`.
+2. **cAdvisor** (recommended): `container_cpu_usage_seconds_total` and
+   `container_memory_working_set_bytes` with `container`, `pod` and `namespace` labels. Without
+   them costs are based on requests only and a pod without requests costs nothing.
+3. **Retention** of at least `pusher.catchUpDays + 1` days of raw (or 5-minute) data.
+4. **One cluster, or a cluster label.** If the store holds more than one cluster, every series
+   above must carry a label whose value equals `clusterName`; set `prometheus.external.clusterLabel`
+   to its name and OpenCost filters every query to this cluster. Without it, other clusters'
+   pods are attributed to this one, and the agent **refuses to push** (`cluster_ambiguity`).
+5. **Do not drop OpenCost's kube-state-metrics-style series because you run kube-state-metrics.**
+   kube-state-metrics v2 exports only allowlisted labels and has no `*_match_labels`; Plutus's tags
+   and controller attribution come from OpenCost's copies. How OpenCost's label decoding behaves
+   when both exist is not verified.
+
+Optionally `--set prometheus.external.serviceMonitor.enabled=true` renders a `ServiceMonitor` for
+OpenCost, only when the prometheus-operator CRD is present.
+
+| Store | Works | How |
+|---|---|---|
+| Prometheus you run | yes | add the scrape job above |
+| kube-prometheus-stack / prometheus-operator | yes | `serviceMonitor.enabled`, or your own |
+| Grafana Cloud | yes, with an Alloy or Prometheus that ships OpenCost's series to it | URL `https://prometheus-<region>.grafana.net/api/prom`, `auth.type=basic` with the instance ID and a token that has `metrics:read`. Billed per active series |
+| Mimir, Cortex | yes | `prometheus.external.tenantId` sets `X-Scope-OrgID`; the path is usually `/prometheus` |
+| Thanos | yes | point at Query or Query Frontend; keep raw or 5-minute resolution for the last four days; extra variables through `opencost.extraEnv` |
+| VictoriaMetrics, Google Managed Prometheus | probably | Prometheus-compatible query APIs; subquery behaviour not verified |
+| Amazon Managed Prometheus | needs a SigV4 proxy | run an `aws-sigv4-proxy` sidecar through `opencost.extraContainers` (and IRSA) and point `url` at it |
+| Azure Monitor managed Prometheus | not directly | needs an AAD-token proxy; OpenCost has no AAD auth |
+| Remote-write-only or agent-mode Prometheus, Datadog, New Relic | no | OpenCost needs a PromQL query endpoint |
+
+Authentication OpenCost supports natively: basic, bearer, mTLS and `X-Scope-OrgID`
+(`prometheus.external.auth.type`: `none`, `basic`, `bearer`, `mtls`, always from a Secret you create,
+never from values). Arbitrary headers are not supported; they need a proxy. The pusher's preflight
+uses the same URL and credentials.
+
+If you already run OpenCost too, `opencost.enabled=false` with `opencost.endpoint` renders no
+OpenCost and no Prometheus; `prometheus.external.url` is then only where the preflight looks.
+
+### Prometheus-less mode (experimental)
+
+`prometheus.mode=none` uses OpenCost's built-in collector data source, which reads the kubelet itself
+and needs no Prometheus. It is experimental because upstream's own documentation still describes a
+Prometheus as required, and because it needs the `nodes/proxy` permission, which can be used to run
+commands in any pod on the node. The chart therefore renders nothing for it until you set
+`prometheus.none.acknowledgeNodesProxy=true`. Its state lives in an `emptyDir` or PVC
+(`prometheus.none.storage`). Use `bundled` unless you have a reason not to.
 
 ### Configuration reference
 
-The agent itself reads only environment variables (12-factor, no config file); the Helm chart's
-`values.yaml` maps to them 1:1. Values on the left, the container env var they set on the right.
+`values.schema.json` validates every value at install time, so a mistyped key or a bad value fails
+`helm install` and `helm lint` with the reason. The agent itself reads only environment variables;
+the chart sets them. The keys you are most likely to touch:
 
-| `values.yaml` key                | env var                 | required | default                                                        |
-|-----------------------------------|--------------------------|----------|-----------------------------------------------------------------|
-| `clusterName`                     | `CLUSTER_NAME`           | **yes**  | none — install fails validation if left as the empty placeholder |
-| `currency`                        | `CURRENCY`               | **yes**  | none — never defaults to USD; see "Currency" below               |
-| `apiKey` / `existingSecret`+`existingSecretKey` | `PLUTUS_API_KEY` (via Secret) | **yes** | none |
-| `plutusIngestUrl`                 | `PLUTUS_INGEST_URL`      | no       | `https://console.plutus-cloud.com/api/ingest/kubernetes-cost`   |
-| `pusher.schedule.utcTime`         | `PUSH_SCHEDULE_UTC`      | no       | `01:30` (UTC, once a day, and at startup)                        |
-| `pusher.schedule.jitterMinutes`   | `PUSH_JITTER_MINUTES`    | no       | `20` (random delay added to the daily time)                      |
-| `pusher.catchUpDays`              | `CATCH_UP_DAYS`          | no       | `3` (closed UTC days covered by each push)                       |
-| `pusher.emptyResult`              | `EMPTY_RESULT`           | no       | `fail` (`ignore` treats a window with no cost rows as normal)    |
-| `pushIntervalMinutes` (deprecated) | `PUSH_INTERVAL_MINUTES` | no       | unset; when set, replaces the daily schedule with a fixed interval |
-| n/a — derived from `opencost.enabled`/`opencost.endpoint` | `OPENCOST_URL` | no | bundled subchart's in-cluster Service when `opencost.enabled=true`, otherwise `opencost.endpoint` |
-| `metricsPort` / `service.port`    | `METRICS_ADDR`           | no       | `9100`                                                            |
+| `values.yaml` key | default | meaning |
+|---|---|---|
+| `clusterName` | required | labels every row and is OpenCost's cluster id |
+| `currency` | required | ISO 4217 code OpenCost is priced in; never defaulted |
+| `apiKey` / `existingSecret` + `existingSecretKey` | required (one) | the Plutus API key |
+| `plutusIngestUrl` | `https://console.plutus-cloud.com/api/ingest/kubernetes-cost` | must be https |
+| `pusher.schedule.utcTime`, `.jitterMinutes` | `01:30`, `20` | daily push time (UTC) and random delay |
+| `pusher.catchUpDays` | `3` | closed UTC days covered by each push |
+| `pusher.emptyResult` | `fail` | `fail`: a window with no cost rows is a fault; `ignore`: normal |
+| `pusher.ingestCA.existingSecret` | none | a private CA to trust for the ingest URL (never disables verification) |
+| `prometheus.mode` | `bundled` | `bundled`, `external`, `none` |
+| `prometheus.bundled.storage.type` | `emptyDir` | `emptyDir` or `pvc` |
+| `prometheus.bundled.kubeletTLS.insecureSkipVerify` | `true` | see Security |
+| `prometheus.external.url`, `.auth`, `.tenantId`, `.clusterLabel` | none | the store you run |
+| `opencost.enabled`, `opencost.endpoint` | `true`, none | `false`: use an OpenCost you run |
+| `opencost.pricing.provider`, `.custom` | `auto` | your own rates |
+| `opencost.extraEnv`, `extraContainers`, `extraVolumes` | empty | escape hatches |
+| `preflight.enabled`, `.blockPushOn`, `.helmTest` | `true`, `[cluster_ambiguity]`, `true` | the checks below |
+| `networkPolicy.enabled`, `.extraIngress` | `true`, empty | ingress policies for Prometheus and OpenCost |
+| `global.imageRegistry`, `global.imagePullSecrets` | empty | a private mirror |
 
-Retry count and backoff on a failed push are fixed constants, not currently exposed as
-`values.yaml` knobs — they haven't needed to be configurable yet.
+Retry count and backoff on a failed push are fixed, not values.
+
+For an air-gapped or mirrored install, three images are pulled (the agent, OpenCost, Prometheus),
+each pinned by tag and digest; `global.imageRegistry` replaces the registry host of all three, and
+the ingest endpoint must still be reachable (through your proxy and `pusher.ingestCA` if needed).
 
 #### Currency
 
-OpenCost does not report its own currency anywhere in its allocation output — it's a cluster-side
-configuration value with no API field to read it back from. Guessing `USD` would silently
-mislabel every figure, so `currency`/`CURRENCY` has no default anywhere in this component — set
-it to whatever ISO 4217 code OpenCost was configured with.
+OpenCost does not report its own currency anywhere in its allocation output. Guessing `USD` would
+silently mislabel every figure, so `currency` has no default: set it to the ISO 4217 code your
+rates are in.
 
 ### What this pushes
 
 Once a day at the scheduled time (and when it starts), the agent queries OpenCost for each of the
-last `catchUpDays` closed UTC days, grouped by namespace/controller/pod/container, and POSTs a
-batch per day like the one below. Covering several days is what lets a day that was missed or
-came back empty fill in later; Plutus replaces a day's rows on each push, so re-sending is safe.
-Within one process a day that was already delivered is not queried again.
+last `catchUpDays` closed UTC days, grouped by namespace, controller, pod and container, and POSTs
+a batch per day:
 
 ```json
 {
@@ -174,33 +294,39 @@ Within one process a day that was already delivered is not queried again.
       "gpu_cost": 0.34,
       "labels": { "team": "platform" }
     }
-  ]
+  ],
+  "collector": {
+    "version": "v2.0.0",
+    "prometheus_mode": "bundled",
+    "window": { "start": "2026-08-10T00:00:00Z", "end": "2026-08-11T00:00:00Z" },
+    "preflight": { "opencost_series": "ok", "usage_series": "ok", "history": "ok" }
+  }
 }
 ```
 
-to `POST /api/ingest/kubernetes-cost` with `Authorization: Bearer <api key>`. A row with no
-namespace/workload identity is kept under an `__unallocated__` sentinel rather than dropped
-(unallocated/idle capacity is actionable, not noise), and a row with no cluster identity falls
-back to the connection's own `cluster_name`. If OpenCost's response omits pod labels or GPU
-cost for a row, the agent treats them as empty/zero rather than failing the whole push — so an
-occasional missing label or GPU figure in Plutus reflects what OpenCost itself reported, not a
-bug in this agent. The response is `{ accepted, rejected, errors: [...] }`; any rejections are
-logged with full detail — check the pod logs if `/metrics` shows a push succeeding but data
-looks incomplete in Plutus.
+to `POST /api/ingest/kubernetes-cost` with `Authorization: Bearer <api key>`. Covering several days
+lets a day that was missed or came back empty fill in later; Plutus replaces a day's rows on each
+push, so re-sending is safe. Within one process a day already delivered is not queried again.
+
+A row with no namespace or workload identity is kept under an `__unallocated__` sentinel rather than
+dropped, and a row with no cluster identity falls back to the connection's `cluster_name`. If
+OpenCost omits pod labels or GPU cost for a row, the agent treats them as empty or zero rather than
+failing the push. The response is `{ accepted, rejected, errors: [...] }`; rejections are logged in
+full.
 
 #### When a day comes back empty
 
 A cluster always runs at least its own system pods, so a day with no priced allocations means the
-data behind OpenCost is missing, not that nothing ran. The agent does not treat that as a
-successful push of nothing:
+data behind OpenCost is missing. The agent does not report that as a successful push of nothing:
 
-- it logs a warning (an error from the second empty day in a row),
-- `plutus_collector_last_push_success` is `0` and `plutus_collector_empty_results_total` and
-  `plutus_collector_consecutive_empty_windows` count it,
+- it logs a warning (an error from the second empty day in a row);
+- `plutus_collector_last_push_success` is `0`, and `plutus_collector_empty_results_total` and
+  `plutus_collector_consecutive_empty_windows` count it;
 - `/readyz` returns 503, so `kubectl get pods` shows `0/1` (`/healthz` stays 200: a data problem
-  never restarts the pod), and
-- it still POSTs a **heartbeat** for the newest window, `rows: []` plus a `collector` block, so
-  Plutus can tell an agent that is running but has no data from one that is not running:
+  never restarts the pod);
+- it POSTs a **heartbeat** for the newest window, `rows: []` plus the `collector` block with an
+  `empty_reason`, so Plutus can tell an agent that is running but has no data from one that is not
+  running. A heartbeat writes and deletes no cost rows.
 
 ```json
 {
@@ -208,46 +334,23 @@ successful push of nothing:
   "currency": "USD",
   "rows": [],
   "collector": {
-    "version": "v1.3.0",
-    "prometheus_mode": "external",
+    "version": "v2.0.0",
+    "prometheus_mode": "bundled",
     "window": { "start": "2026-08-10T00:00:00Z", "end": "2026-08-11T00:00:00Z" },
-    "empty_reason": "no_allocations"
+    "empty_reason": "no_allocations",
+    "preflight": { "opencost_series": "error" }
   }
 }
 ```
 
-A heartbeat writes and deletes no cost rows. `EMPTY_RESULT=ignore` turns the failure behaviour
-off for clusters where an empty day really is normal; the heartbeat is still sent.
-
-#### Preflight checks
-
-The agent checks the data behind OpenCost at startup, before each push and every 15 minutes: the
-metrics store answers, OpenCost's series are in it, container usage is present, the store holds
-one cluster, it holds enough history, and OpenCost computes allocations from all of that. Results
-are logged with the fix (`check=<id> remedy=...`), exported as
-`plutus_collector_preflight_ok{check="<id>"}`, sent to Plutus in the heartbeat's `preflight` block,
-and any check at `error` severity makes `/readyz` return 503. Run them by hand:
-
-```bash
-helm test plutus-collector -n plutus-collector
-kubectl -n plutus-collector exec deploy/plutus-collector -- /plutus-collector preflight
-```
-
-Check ids: `prometheus_reachable`, `opencost_series`, `allocation_series`, `pods_running`,
-`pod_labels`, `namespace_labels`, `controller_labels`, `usage_series`, `cluster_ambiguity`,
-`history`, `opencost_reachable`, `allocation_nonempty`, `pricing`. The agent finds the store from
-the same `opencost.opencost.prometheus.*` values OpenCost uses (override with
-`preflight.prometheusUrl`). `cluster_ambiguity` blocks the push by default: when one store holds
-several clusters and nothing tells them apart, their costs would be attributed to this cluster.
-Set `preflight.clusterLabel` and configure OpenCost's `PROM_CLUSTER_ID_LABEL` to the same label.
-
-A window that ended before the store's first OpenCost sample (the day an install happened) is
-reported as `empty_reason: "no_history"` and is not a fault.
+`empty_reason` is `no_allocations` (OpenCost returned none), `all_zero_cost`, `no_history` (the
+store has no data yet for that window; not a fault) or `preflight_blocked:<check>`.
+`pusher.emptyResult=ignore` turns the failure behaviour off; the heartbeat is still sent.
 
 #### One-off pushes
 
-`plutus-collector --once` does one pass and exits non-zero if any window failed or came back
-empty. `--window=<start>,<end>` (RFC3339) pushes that window instead of the recent days:
+`plutus-collector --once` does one pass and exits non-zero if any window failed or came back empty
+where that is a fault. `--window=<start>,<end>` (RFC3339) pushes that window instead:
 
 ```bash
 kubectl -n plutus-collector exec deploy/plutus-collector -- \
@@ -256,6 +359,63 @@ kubectl -n plutus-collector exec deploy/plutus-collector -- \
 
 Rows are dated by the start's UTC day and a push replaces that whole day in Plutus, so backfill
 whole UTC days; a shorter window replaces the day with a partial one.
+
+### Preflight checks and troubleshooting
+
+The agent checks the data behind OpenCost at startup, before each push and every 15 minutes. Run
+the same checks by hand:
+
+```bash
+helm test plutus-collector --namespace plutus-collector
+kubectl -n plutus-collector exec deploy/plutus-collector -- /plutus-collector preflight
+```
+
+Results are logged with the fix (`check=<id> remedy=...`), exported as
+`plutus_collector_preflight_ok{check="<id>"}`, sent to Plutus in the heartbeat, and any check at
+`error` severity makes `/readyz` return 503. `warn` does not. One row per check:
+
+| Check | Severity | Meaning and fix |
+|---|---|---|
+| `prometheus_reachable` | error | The store did not answer. 401/403: the credentials are wrong or the token lacks read scope. 404: wrong path (Grafana Cloud needs `/api/prom`, Mimir `/prometheus`). Unreachable: check the URL, DNS and network policy; with the bundled store check that its pod is Running (it is Pending if it asked for a PVC and there is no default StorageClass). |
+| `opencost_series` | error | No `node_cpu_hourly_cost`: nothing scrapes OpenCost. Bundled: check the OpenCost pod. External: add the scrape job (contract above). |
+| `allocation_series` | error | No `container_cpu_allocation`: your keep-list drops it, or the scrape is not reaching the store. |
+| `pods_running` | error | No `kube_pod_container_status_running`: OpenCost cannot tell which pods existed. |
+| `pod_labels`, `namespace_labels` | warn | Labels are missing, so cost tags and team attribution will be empty. |
+| `controller_labels` | warn | No `deployment_match_labels`: cost cannot be attributed to a Deployment or StatefulSet, only to pods. |
+| `usage_series` | warn | No cAdvisor CPU usage: costs are request-based and a pod without requests costs nothing. Bundled: the kubelet may be unreachable from pods (GKE Autopilot, EKS Fargate, a strict NetworkPolicy), or TLS verification is on and the certificate does not verify. |
+| `cluster_ambiguity` | error, blocks the push | The store holds several clusters and no label is configured. Set `prometheus.external.clusterLabel`. |
+| `history` | warn | The store holds less history than the days to push. Expected right after an install; if OpenCost has run for longer, retention or an `emptyDir` reschedule dropped it. |
+| `opencost_reachable` | error | OpenCost does not answer. Its logs say what it is waiting for, most often its Prometheus. |
+| `allocation_nonempty` | error | OpenCost is up and its series are present but it computed no allocations for the last hour. If it started minutes ago, wait a few scrape intervals. |
+| `pricing` | warn | OpenCost found no cloud provider and no custom rates are set; see Pricing. |
+
+`preflight.blockPushOn` lists the checks that stop a push (default `cluster_ambiguity`); a blocked
+push still sends a heartbeat naming the check.
+
+Other symptoms:
+
+| Symptom | Cause |
+|---|---|
+| OpenCost pod restarting right after install | It waits for its Prometheus and retries for several minutes before serving `/healthz`; the startup probe allows five. On a cluster that is short of resources, check the Prometheus pod first. |
+| Pusher `0/1` the morning after install | Read `kubectl logs`: the failing check and its fix are in the line. |
+| Rows have `cluster: default-cluster` | You are on an OpenCost you run (`opencost.enabled=false`) that has its own cluster id; set it to `clusterName`. With the chart's OpenCost this cannot happen. |
+| Costs look like GCP prices on a non-cloud cluster | `pricing` warning: set `opencost.pricing.custom`. |
+| `PLUTUS_INGEST_URL must use https` | It carries a Bearer key and is never allowed in cleartext. |
+| Install fails with `Additional property ... is not allowed` | A key the schema does not know: see MIGRATING.md if it came from a v1 values file. |
+
+### Upgrading from v1
+
+Chart v2 renders OpenCost itself and no longer takes values for the OpenCost subchart. A v1 values
+file keeps working for one release through a translation layer; see [MIGRATING.md](MIGRATING.md).
+
+### Uninstalling
+
+```bash
+helm uninstall plutus-collector --namespace plutus-collector
+```
+
+Revoking the API key in Plutus (Cost Sources → Kubernetes → Revoke) stops the agent from being able
+to push immediately, independent of whether you've uninstalled the chart.
 
 ## LiteLLM collector
 
@@ -309,7 +469,7 @@ Docker Compose, as a service alongside an existing LiteLLM:
 ```
 
 **On Kubernetes**: there is no Helm chart for this one yet — the chart in `chart/` installs the
-OpenCost agent only. Run it as an ordinary one-replica `Deployment` with the same environment
+Kubernetes cost agent only. Run it as an ordinary one-replica `Deployment` with the same environment
 variables, pointing `LITELLM_BASE_URL` at your LiteLLM `Service`. One replica, for the same
 reason the Kubernetes agent is fixed at one: a second would push the same batch again, which the
 backend's idempotent ingest makes harmless but pointless.
@@ -566,24 +726,60 @@ disk, never sent.
 
 Kubernetes agent specifics:
 
-- **No Kubernetes API access.** This agent has no `ServiceAccount` RBAC bindings of its own — it
-  only calls OpenCost's HTTP `/allocation` endpoint (in-cluster) and Plutus's ingest endpoint
-  (outbound HTTPS). It never reads pods, nodes, or any other cluster object directly; OpenCost
-  is what needs cluster-read access, under its own subchart's own RBAC, unrelated to this
-  component. If you disable the bundled subchart (`opencost.enabled=false`) and point at an
-  OpenCost you already run, this agent's own permission footprint stays exactly the same: none.
-- **Locked-down pod security context**: runs as non-root, with a read-only root filesystem,
-  `allowPrivilegeEscalation: false`, and every Linux capability dropped.
-- **Small, fixed resource footprint**: requests `10m` CPU / `32Mi` memory, capped at `64Mi`
-  memory. Fixed at 1 replica — a second replica would just push the same batch twice, which the
-  backend's idempotent ingest makes harmless but pointless, so there's nothing to autoscale.
+- **The pusher has no Kubernetes API access.** It has no `ServiceAccount` token mounted and no
+  RBAC of its own. It calls OpenCost's HTTP `/allocation` endpoint and, for the preflight, the
+  metrics store's query API, both inside your cluster, and Plutus's ingest endpoint (outbound
+  HTTPS). It never reads pods, nodes or any other cluster object.
+- **Locked-down pod security context** for the pusher: non-root, read-only root filesystem,
+  `allowPrivilegeEscalation: false`, every Linux capability dropped, `RuntimeDefault` seccomp.
+  Fixed at one replica: a second would push the same batch twice.
+- **RBAC the chart does create**, all cluster-wide and read-only except where noted:
+
+  | Mode | OpenCost | Bundled Prometheus |
+  |---|---|---|
+  | `bundled` (default) | get/list/watch on pods, nodes, namespaces, services, workloads, volumes, storage classes and a few more (the list OpenCost needs; see `chart/templates/opencost.yaml`) | `nodes` and `nodes/metrics` (get/list/watch) |
+  | `external` | the same | none; no Prometheus is rendered |
+  | `none` (experimental) | the same, plus `nodes/proxy` | none |
+
+  `nodes/proxy` is rendered only for `prometheus.mode=none`, and only after you set
+  `prometheus.none.acknowledgeNodesProxy=true`: that permission can be used to run commands in
+  any pod on the node (the kubelet's exec endpoint is reachable through it), which is also why it
+  is not in the default. The chart installs no CRDs and no admission webhooks, and no UI or MCP
+  server for OpenCost (the MCP server is an unauthenticated endpoint serving cost data).
+- **The bundled Prometheus and OpenCost serve unauthenticated, cluster-wide telemetry**, so the
+  chart renders ingress NetworkPolicies (`networkPolicy.enabled`, default on): Prometheus accepts
+  only OpenCost and the pusher, OpenCost only the bundled Prometheus and the pusher. They restrict
+  ingress only. Kubernetes enforces NetworkPolicy only when the cluster's network plugin does
+  (Calico and Cilium do; flannel on its own does not), so on a cluster without enforcement this
+  has no effect. With `prometheus.mode=external` no OpenCost policy is rendered, because the
+  scraper is yours; add a policy for it, or rules through `networkPolicy.extraIngress`.
+- **Kubelet TLS.** The bundled Prometheus scrapes each node's kubelet over HTTPS with its service
+  account token, and by default does not verify the kubelet's certificate
+  (`prometheus.bundled.kubeletTLS.insecureSkipVerify: true`). That default is a tradeoff: kubelet
+  serving certificates are self-signed on kubeadm and k3s clusters, and verifying them there would
+  make the scrape fail and silently drop usage metrics, so costs would fall back to requests only.
+  What it means: someone able to intercept traffic between pods and nodes could present a fake
+  kubelet and capture the token, which grants `nodes` and `nodes/metrics` read access. Where the
+  kubelet certificates are signed by your cluster CA (check yours; this chart cannot tell), set it to
+  `false` and the cluster CA that every pod already has is used. If they are signed by another CA, also set
+  `prometheus.bundled.kubeletTLS.caSecret` to a Secret holding its PEM (key `caKey`, default
+  `ca.crt`). The chart does not use the API server's node proxy instead, because that needs
+  `nodes/proxy`. The install notes repeat this while the default is in effect.
+- **Credentials** for an external store are read from a Secret you create (`existingSecret`) and
+  mounted or referenced by the pods; they are never copied into the chart's own objects, and URLs
+  containing `user:password@` are refused.
+- **Images** are pinned by tag and digest (the digests come from the published multi-arch
+  manifests); the agent image and chart are signed, see [SECURITY.md](SECURITY.md).
+
 ### How do I verify it's working?
 
 All collectors expose the same endpoints and emit the same metric names, on `METRICS_ADDR`
 (`:9100` by default).
 
-1. **`/healthz`** — liveness/readiness, always `200 ok` once the process is up (a down
-   OpenCost/Plutus endpoint is a push failure to retry, not a readiness failure).
+1. **`/healthz`** — liveness, always `200 ok` once the process is up (a down OpenCost/Plutus
+   endpoint is a push failure to retry, not a reason to restart the container).
+   **`/readyz`** — readiness: `200`, or `503` with the reasons while the Kubernetes agent's last
+   window came back empty or a preflight check is failing (gateway collectors are always ready).
 2. **`/metrics`** (Prometheus text format) — the fields that matter:
    - `plutus_collector_last_push_success` — `1` after a successful push, `0` after one that
      failed all its retries.
@@ -591,6 +787,10 @@ All collectors expose the same endpoints and emit the same metric names, on `MET
    - `plutus_collector_last_push_row_count` — how many rows were in the last successful batch.
    - `plutus_collector_last_push_duration_seconds` — how long the attempt (including retries)
      took.
+   - `plutus_collector_empty_results_total`, `plutus_collector_consecutive_empty_windows`,
+     `plutus_collector_last_success_window_timestamp_seconds` — empty-window accounting.
+   - `plutus_collector_preflight_ok{check="<id>"}` and `plutus_collector_window_coverage_ratio` —
+     the Kubernetes agent's preflight outcome and how much of the newest window the store covers.
 
    ```bash
    kubectl -n plutus-collector port-forward svc/plutus-collector 9100:9100
@@ -598,8 +798,8 @@ All collectors expose the same endpoints and emit the same metric names, on `MET
    ```
    For the LiteLLM collector outside Kubernetes, that is just
    `curl localhost:9100/metrics` against the container's published port.
-3. **The Plutus UI** — the cost source's connection panel shows "Receiving data" with a
-   last-push timestamp once the first push succeeds.
+3. **The Plutus UI** — the cost source's connection panel shows the last push once the first
+   one succeeds.
 4. **Logs** (`kubectl logs`, or `docker logs plutus-litellm-collector`) — structured JSON, one
    object per line, so your own log aggregation can parse it directly. Every push cycle logs a
    start line naming the source, the row count about to be pushed, and either a success (with
@@ -622,7 +822,9 @@ you run — publish or expose `METRICS_ADDR` and point your scraper at it.
 ```bash
 go build ./...
 go test ./...
-helm lint chart/
+test/chart/run.sh            # helm template goldens, v1 shim, install-time failures, kubeconform
+UPDATE=1 test/chart/run.sh   # accept an intended chart change, then review the golden diff
+test/e2e/run.sh              # kind end-to-end test, about ten minutes (docker, kind, kubectl, helm, jq)
 
 # Two images from one Dockerfile. Stage order is load-bearing: the Kubernetes image is
 # deliberately last, so a build with no --target still produces what it always did.
@@ -644,8 +846,8 @@ to avoid.
 
 Shared by all binaries:
 
-- `internal/pusher` — the ticker loop, in-process retry/backoff, and the `Source` interface each
-  collector implements. Its real subject is the failure policy (which errors are retryable, that
+- `internal/pusher` — the schedule/ticker loop, catch-up windows, in-process retry/backoff, and the
+  `Source` interface each collector implements. Its real subject is the failure policy (which errors are retryable, that
   a 4xx must not consume the backoff budget, that an empty result is never pushed as an empty
   batch), which is identical for every source and is exactly what drifts when a second agent
   copies it instead of sharing it.
@@ -653,13 +855,16 @@ Shared by all binaries:
   the `Response` shape. Deliberately knows nothing about what it is sending.
 - `internal/config` — env-var loading and validation (12-factor, no config file). `Common` plus
   one loader per binary, since the required variables genuinely differ.
-- `internal/metrics` — the hand-rolled `/metrics` (Prometheus text format) and `/healthz`
-  handlers.
+- `internal/metrics` — the hand-rolled `/metrics` (Prometheus text format), `/healthz` and
+  `/readyz` handlers.
+- `internal/version` — the release tag stamped into the binary at build time.
 
 Kubernetes:
 
 - `cmd/plutus-collector` — entrypoint.
-- `internal/opencost` — the OpenCost `/allocation` HTTP client.
+- `internal/opencost` — the OpenCost `/allocation` HTTP client and the preflight probes.
+- `internal/preflight` — the data-pipeline checks and their stable ids; `internal/promclient` is the
+  small Prometheus query client they use.
 - `internal/k8scost` — the Plutus batch JSON shape (a fixed contract with the backend's ingest
   route), the OpenCost-row → batch-row mapping, and the `Source` implementation.
 

@@ -21,9 +21,8 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: plutus-collector
+              app.kubernetes.io/name: opencost
               app.kubernetes.io/instance: plutus-collector
-              app.kubernetes.io/component: opencost
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: plutus-collector
@@ -42,16 +41,15 @@ metadata:
   name: plutus-collector-opencost
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: opencost
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: opencost
     app.kubernetes.io/managed-by: Helm
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: plutus-collector
+      app.kubernetes.io/name: opencost
       app.kubernetes.io/instance: plutus-collector
-      app.kubernetes.io/component: opencost
   policyTypes: ["Ingress"]
   ingress:
     - from:
@@ -79,7 +77,7 @@ metadata:
   name: plutus-collector-opencost
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: opencost
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: opencost
     app.kubernetes.io/managed-by: Helm
@@ -175,7 +173,7 @@ metadata:
   name: plutus-collector-opencost
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: opencost
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: opencost
     app.kubernetes.io/managed-by: Helm
@@ -239,7 +237,7 @@ metadata:
   name: plutus-collector-opencost
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: opencost
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: opencost
     app.kubernetes.io/managed-by: Helm
@@ -279,16 +277,15 @@ metadata:
   name: plutus-collector-opencost
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: opencost
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: opencost
     app.kubernetes.io/managed-by: Helm
 spec:
   type: ClusterIP
   selector:
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: opencost
     app.kubernetes.io/instance: plutus-collector
-    app.kubernetes.io/component: opencost
   ports:
     - name: http
       port: 9003
@@ -444,7 +441,7 @@ metadata:
   name: plutus-collector-opencost
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: opencost
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: opencost
     app.kubernetes.io/managed-by: Helm
@@ -456,15 +453,16 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      app.kubernetes.io/name: plutus-collector
+      app.kubernetes.io/name: opencost
       app.kubernetes.io/instance: plutus-collector
-      app.kubernetes.io/component: opencost
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: plutus-collector
+        helm.sh/chart: plutus-collector-0.1.0
+        app.kubernetes.io/name: opencost
         app.kubernetes.io/instance: plutus-collector
         app.kubernetes.io/component: opencost
+        app.kubernetes.io/managed-by: Helm
     spec:
       serviceAccountName: plutus-collector-opencost
       automountServiceAccountToken: true
@@ -558,9 +556,11 @@ spec:
   template:
     metadata:
       labels:
+        helm.sh/chart: plutus-collector-0.1.0
         app.kubernetes.io/name: plutus-collector
         app.kubernetes.io/instance: plutus-collector
         app.kubernetes.io/component: prometheus
+        app.kubernetes.io/managed-by: Helm
       annotations:
         checksum/config: 5e107f11f23b9346b9135bc388fedb5e8ed90fe307277a671e4b18ec2a6d3df1
     spec:
@@ -583,7 +583,6 @@ spec:
             - --storage.tsdb.retention.time=4d
             - --storage.tsdb.retention.size=3276MB
             - --web.listen-address=:9090
-            - --web.enable-lifecycle=false
           ports:
             - name: http
               containerPort: 9090

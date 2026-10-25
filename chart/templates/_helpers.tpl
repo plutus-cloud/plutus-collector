@@ -44,14 +44,28 @@ Labels and selector labels for the OpenCost and Prometheus components. Called wi
 root (the chart context) and component.
 */}}
 {{- define "plutus-collector.componentSelectorLabels" -}}
+{{- if eq .component "opencost" -}}
+{{- /* The v1 chart's OpenCost selector, unchanged: a Deployment's selector is immutable, so an
+       upgrade from v1 only works in place if it stays the same. */ -}}
+app.kubernetes.io/name: opencost
+app.kubernetes.io/instance: {{ .root.Release.Name }}
+{{- else -}}
 app.kubernetes.io/name: {{ include "plutus-collector.name" .root }}
 app.kubernetes.io/instance: {{ .root.Release.Name }}
 app.kubernetes.io/component: {{ .component }}
 {{- end -}}
+{{- end -}}
 
+{{/*
+Labels for an object (and a pod template) of a component. OpenCost's selector has no component
+label, so it is added here.
+*/}}
 {{- define "plutus-collector.componentLabels" -}}
 helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version | replace "+" "_" }}
 {{ include "plutus-collector.componentSelectorLabels" . }}
+{{- if eq .component "opencost" }}
+app.kubernetes.io/component: opencost
+{{- end }}
 app.kubernetes.io/managed-by: {{ .root.Release.Service }}
 {{- end -}}
 

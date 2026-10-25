@@ -1,0 +1,69 @@
+name: Upstream image drift
+
+# The chart renders OpenCost and Prometheus itself and pins both by tag and digest, so neither
+# moves unless this repository moves it, and Dependabot does not watch image references in Helm
+# values. This weekly check compares each pin with the newest upstream release and with what the
+# registry currently serves for the pinned tag, and opens (or updates) one issue when either has
+# changed. It changes nothing in the repository.
+#
+# What a human does with the issue: bump the tag and digest in chart/values.yaml, run
+# `UPDATE=1 test/chart/run.sh` and `test/e2e/run.sh`, and read the OpenCost release notes for
+# changes to the series the preflight checks and the contract in the README depend on.
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Compare the pins with upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          report=""
+
+          check() { # name, upstream github repo, registry image, tag pinned, digest pinned
+            local name="$1" upstream="$2" image="$3" tag="$4" digest="$5"
+            local latest served
+            latest="$(gh api "repos/$upstream/releases/latest" --jq .tag_name)"
+            served="$(docker buildx imagetools inspect "$image:$tag" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            if [ "$latest" != "$tag" ] && [ "v${latest#v}" != "v${tag#v}" ]; then
+              report+="- $name: pinned $tag, newest upstream release is $latest"$'\n'
+            fi
+            if [ "$served" != "$digest" ]; then
+              report+="- $name: the registry now serves $served for $tag, the chart pins $digest"$'\n'
+            fi
+          }
+
+          oc_tag="$(awk '/^opencost:/{o=1} o&&/^  image:/{i=1} o&&i&&$1=="tag:"{gsub(/"/,"",$2); print $2; exit}' chart/values.yaml)"
+          oc_digest="$(awk '/^opencost:/{o=1} o&&/^  image:/{i=1} o&&i&&$1=="digest:"{gsub(/"/,"",$2); print $2; exit}' chart/values.yaml)"
+          pr_tag="$(awk '/^  bundled:/{b=1} b&&/^    image:/{i=1} b&&i&&$1=="tag:"{gsub(/"/,"",$2); print $2; exit}' chart/values.yaml)"
+          pr_digest="$(awk '/^  bundled:/{b=1} b&&/^    image:/{i=1} b&&i&&$1=="digest:"{gsub(/"/,"",$2); print $2; exit}' chart/values.yaml)"
+          [ -n "$oc_tag" ] && [ -n "$oc_digest" ] && [ -n "$pr_tag" ] && [ -n "$pr_digest" ] || { echo "could not read the pins from chart/values.yaml" >&2; exit 1; }
+
+          check OpenCost opencost/opencost ghcr.io/opencost/opencost "$oc_tag" "$oc_digest"
+          check Prometheus prometheus/prometheus quay.io/prometheus/prometheus "$pr_tag" "$pr_digest"
+
+          if [ -z "$report" ]; then echo "pins are current"; exit 0; fi
+          printf 'Upstream drift:\n%s\n' "$report"
+
+          title="OpenCost or Prometheus pin has drifted from upstream"
+          body="$(printf 'The weekly check found:\n\n%s\nSee the header of .github/workflows/upstream-drift.yml for what to do.' "$report")"
+          existing="$(gh issue list --repo "$REPOSITORY" --state open --search "$title in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$REPOSITORY" --title "$title" --body "$body"
+          fi

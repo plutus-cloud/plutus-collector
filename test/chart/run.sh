@@ -118,6 +118,11 @@ grep -q "CURRENT_CLUSTER_ID_FILTER_ENABLED" "$tmp/external-multicluster.yaml" ||
 grep -q "kind: ServiceMonitor" "$tmp/external-multicluster.yaml" || fail "external-multicluster did not render its ServiceMonitor"
 grep -q "kind: Deployment" "$tmp/opencost-disabled.yaml" && grep -q "name: plutus-collector-opencost" "$tmp/opencost-disabled.yaml" && fail "opencost-disabled renders OpenCost"
 
+# An upgrade from v1 replaces OpenCost in place, which needs its immutable selector unchanged.
+awk '/name: plutus-collector-opencost$/{f=1} f&&/matchLabels:/{m=1;next} m&&/app.kubernetes.io\/name: opencost/{ok=1} m&&/template:/{exit} END{exit !ok}' "$tmp/default.yaml" \
+  || fail "OpenCost's Deployment selector is not the v1 selector (name: opencost)"
+grep -q "enable-lifecycle" "$tmp/default.yaml" && fail "the bundled Prometheus is given a lifecycle flag Prometheus 3 does not accept in this form"
+
 # Network policy: ingress only, on by default, absent where the peers are not known.
 [ "$(grep -c '^kind: NetworkPolicy' "$tmp/default.yaml")" = 2 ] || fail "default render should have a NetworkPolicy for Prometheus and one for OpenCost"
 grep -q "Egress" "$tmp/default.yaml" && fail "network policies must not restrict egress"

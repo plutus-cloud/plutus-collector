@@ -172,11 +172,9 @@ jobs:
 
       # --version/--app-version pass the release tag straight through (e.g. "v0.1.0") rather than
       # Chart.yaml's own committed "0.1.0" placeholder — Helm's semver library accepts a leading
-      # "v" and strips it, so no reformatting needed. `helm dependency build` fetches exactly the
-      # OpenCost subchart version recorded in the committed Chart.lock (it fails if Chart.yaml and
-      # the lock disagree, where `update` would silently re-resolve), so the published chart is
-      # self-contained and reproducible rather than depending on a customer's own
-      # `helm dependency update` succeeding against opencost.github.io at install time. Pushed under a `charts/`
+      # "v" and strips it, so no reformatting needed. The chart has no dependencies (it renders
+      # OpenCost and Prometheus itself, pinned by digest in values.yaml), so packaging fetches
+      # nothing and the published chart is exactly what is in the repository. Pushed under a `charts/`
       # sub-segment so the chart's OCI package doesn't collide with the image's own package at
       # the bare repo path above.
       # Tag refs only: a chart version must be valid semver, and `github.ref_name` on a
@@ -190,7 +188,6 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          helm dependency build
           helm package . --version "$RELEASE_TAG" --app-version "$RELEASE_TAG"
           helm push "plutus-collector-$RELEASE_TAG.tgz" "oci://ghcr.io/plutus-cloud/charts"
 
