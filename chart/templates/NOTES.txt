@@ -1,20 +1,56 @@
+{{- $c := include "plutus-collector.cfg" . | fromYaml -}}
 plutus-collector has been installed.
 
-Cluster name:   {{ .Values.clusterName }}
-Ingest URL:     {{ .Values.plutusIngestUrl }}
-Push interval:  every {{ .Values.pushIntervalMinutes }} minutes
-OpenCost:       {{ if .Values.opencost.enabled }}bundled subchart{{ else }}{{ .Values.opencost.endpoint }}{{ end }}
+Cluster name:   {{ $c.clusterName }}
+Ingest URL:     {{ $c.plutusIngestUrl }}
+Push schedule:  {{ if $c.pusher.pushIntervalMinutes }}every {{ $c.pusher.pushIntervalMinutes }} minutes (deprecated, prefer pusher.schedule){{ else }}daily at {{ $c.pusher.schedule.utcTime }} UTC (+ up to {{ $c.pusher.schedule.jitterMinutes }} min), last {{ $c.pusher.catchUpDays }} closed days{{ end }}
+OpenCost:       {{ if $c.opencost.enabled }}installed by this chart ({{ $c.opencost.image.tag }}){{ else }}{{ $c.opencost.endpoint }}{{ end }}
+Metrics store:  {{ if eq $c.prometheus.mode "bundled" }}bundled Prometheus ({{ $c.prometheus.bundled.storage.type }}, {{ $c.prometheus.bundled.retention }} retention){{ else if eq $c.prometheus.mode "external" }}{{ $c.prometheus.external.url }}{{ else }}none (OpenCost collector data source, experimental){{ end }}
+{{ if eq $c.prometheus.mode "bundled" }}
+The first complete day of cost data appears the day after install: OpenCost and the bundled
+Prometheus start collecting now, and the agent pushes closed UTC days. Until then the pod may
+report no data for yesterday; that is expected on a new install and does not mark it unready.
+{{- if eq $c.prometheus.bundled.storage.type "emptyDir" }}
 
-Check it's working:
+The bundled Prometheus keeps its data in an emptyDir: it survives container restarts but not the
+pod being rescheduled to another node, which loses the history it holds. Set
+prometheus.bundled.storage.type=pvc to keep it (the pod stays Pending if the cluster has no
+default StorageClass).
+{{- end }}
+{{- if $c.prometheus.bundled.kubeletTLS.insecureSkipVerify }}
+
+Security: the bundled Prometheus scrapes each node's kubelet over HTTPS with its service account
+token and does not verify the kubelet's certificate (prometheus.bundled.kubeletTLS.insecureSkipVerify
+is true), because kubelet certificates are self-signed on kubeadm and k3s clusters. Anyone who can
+intercept pod-to-node traffic could read that token and the usage metrics. Where the kubelet
+certificates are signed by your cluster CA, set it to false; for another CA, also set
+prometheus.bundled.kubeletTLS.caSecret.
+{{- end }}
+{{- end }}
+{{- if eq $c.prometheus.mode "none" }}
+
+prometheus.mode=none is experimental. It renders the nodes/proxy permission for OpenCost, which can
+be used to run commands in any pod on the node.
+{{- end }}
+{{- if and $c.opencost.enabled (eq $c.opencost.pricing.provider "auto") }}
+
+Pricing: OpenCost uses your cloud provider's price list when it can identify the provider. On a
+cluster it cannot identify (on-prem, Hetzner, ...) it falls back to built-in default rates and the
+preflight warns about it; set opencost.pricing.provider=custom and the rates to price your own.
+{{- end }}
+{{- range $c.deprecations }}
+
+Deprecated: {{ . }}
+{{- end }}
+
+Check it:
+
+  helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }}
+  kubectl -n {{ .Release.Namespace }} get pods
+
+The pusher pod is Ready (1/1) while its data checks pass. `kubectl logs` on it names any check that
+fails and how to fix it, and so does `helm test`. Metrics:
 
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "plutus-collector.fullname" . }} 9100:{{ .Values.service.port }}
-  curl localhost:9100/healthz
-  curl localhost:9100/metrics
-
-Look for `plutus_collector_last_push_success 1` after the first push cycle (immediate on
-startup, then every {{ .Values.pushIntervalMinutes }} minutes). You can also check
-`last_ingested_at` on the Kubernetes cost source's connection panel in the Plutus UI.
-
-If `plutus_collector_last_push_success 0`, check the pod logs:
-
-  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "plutus-collector.fullname" . }}
+  curl localhost:9100/readyz
+  curl localhost:9100/metrics | grep plutus_collector_

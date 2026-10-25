@@ -1,0 +1,8 @@
+# Kubelet certificates are signed by the cluster CA: verify them with the CA every pod already has.
+clusterName: prod-us-east-1
+currency: USD
+apiKey: test-api-key
+prometheus:
+  bundled:
+    kubeletTLS:
+      insecureSkipVerify: false

@@ -28,10 +28,15 @@ updates:
   # image is the other half of that, same split as the main repo's dependabot.yml/
   # nightly-tests.yml pair.
   - package-ecosystem: "docker"
-    directory: "/"
+    directories:
+      - "/"
+      - "/test/e2e/mockingest"
     schedule:
       interval: "weekly"
     groups:
       docker-base-images:
         patterns:
           - "*"
+
+  # The OpenCost and Prometheus images the chart renders are pinned in chart/values.yaml, which
+  # Dependabot does not read; .github/workflows/upstream-drift.yml watches those.

@@ -1,0 +1,19 @@
+clusterName: prod-us-east-1
+currency: USD
+existingSecret: plutus-collector-key
+prometheus:
+  mode: bundled
+  bundled:
+    retention: 7d
+    storage:
+      type: pvc
+      size: 20Gi
+      storageClass: fast
+    nodeSelector:
+      kubernetes.io/os: linux
+pusher:
+  catchUpDays: 5
+global:
+  imageRegistry: registry.example.com/mirror
+  imagePullSecrets:
+    - name: mirror-pull

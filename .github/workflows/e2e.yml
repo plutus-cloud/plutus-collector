@@ -1,0 +1,60 @@
+name: End-to-end
+
+# Installs the chart on a throwaway kind cluster with nothing else in it, lets OpenCost and the
+# bundled Prometheus collect, pushes a recent window to a mock ingest endpoint and asserts on the
+# attribution; then points OpenCost at a Prometheus that does not scrape it and asserts the agent
+# reports that instead of a healthy push of nothing. See test/e2e/run.sh.
+#
+# Runs on the paths that can change what a cluster sees, nightly (OpenCost and Prometheus images
+# are pinned by digest, but kind's Kubernetes version and the base images move), and on demand.
+# amd64 and arm64 are separate jobs: the images are multi-architecture and an arm64 node is where
+# an amd64-only manifest would fail. Actions minutes on public repositories are free, so there is
+# no reason to skip either.
+on:
+  pull_request:
+    paths:
+      - "chart/**"
+      - "cmd/**"
+      - "internal/**"
+      - "test/**"
+      - "Dockerfile"
+      - "go.mod"
+      - ".github/workflows/e2e.yml"
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kind:
+    name: kind (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.26"
+          check-latest: false
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: v3.16.4
+      # Pinned by version; go install verifies the module against the Go checksum database.
+      - name: Install kind
+        run: |
+          go install sigs.k8s.io/kind@v0.33.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Run the end-to-end test
+        env:
+          FOOTPRINT_PODS: "100"
+        run: test/e2e/run.sh

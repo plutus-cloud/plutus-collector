@@ -1,10 +1,11 @@
 apiVersion: v2
 name: plutus-collector
 description: >-
-  Installs the Plutus Kubernetes cost-allocation pusher agent, plus (by default) OpenCost as a
-  subchart, so cost data starts flowing into Plutus with one `helm install`. Set
-  opencost.enabled=false and pusher.openCostUrl to point at an OpenCost instance you already run.
+  Installs the Plutus Kubernetes cost-allocation agent together with the OpenCost and Prometheus
+  it reads from, so cost data starts flowing into Plutus with one `helm install` and nothing
+  pre-installed. Point it at a Prometheus you already run with prometheus.mode=external.
 type: application
+# release.yml overwrites both with the release tag at package time.
 version: 0.1.0
 appVersion: "0.1.0"
 home: https://plutus-cloud.com
@@ -18,12 +19,3 @@ keywords:
 maintainers:
   - name: Plutus
     url: https://plutus-cloud.com
-
-dependencies:
-  # Verified 2026-08-10: https://opencost.github.io/opencost-helm-chart/index.yaml resolves
-  # (HTTP 200) and lists a chart named "opencost", latest published version 2.5.29 at the time
-  # of checking.
-  - name: opencost
-    version: ">=2.5.0 <3.0.0"
-    repository: "https://opencost.github.io/opencost-helm-chart"
-    condition: opencost.enabled

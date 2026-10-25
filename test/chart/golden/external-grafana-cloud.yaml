@@ -1,0 +1,410 @@
+---
+# Source: plutus-collector/templates/opencost.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: plutus-collector-opencost
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: opencost
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: opencost
+    app.kubernetes.io/managed-by: Helm
+automountServiceAccountToken: true
+---
+# Source: plutus-collector/templates/opencost.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: plutus-collector-opencost
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: opencost
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: opencost
+    app.kubernetes.io/managed-by: Helm
+rules:
+  # Read-only. The same resource list as the upstream OpenCost chart this replaces, which is
+  # what OpenCost 1.121 was validated against.
+  - apiGroups: [""]
+    resources:
+      - configmaps
+      - deployments
+      - nodes
+      - pods
+      - services
+      - resourcequotas
+      - replicationcontrollers
+      - limitranges
+      - persistentvolumeclaims
+      - persistentvolumes
+      - namespaces
+      - endpoints
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["extensions"]
+    resources: ["daemonsets", "deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "deployments", "daemonsets", "replicasets"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs", "jobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+---
+# Source: plutus-collector/templates/opencost.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: plutus-collector-opencost
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: opencost
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: opencost
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: plutus-collector-opencost
+subjects:
+  - kind: ServiceAccount
+    name: plutus-collector-opencost
+    namespace: plutus-collector
+---
+# Source: plutus-collector/templates/opencost.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: plutus-collector-opencost
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: opencost
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: opencost
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: opencost
+    app.kubernetes.io/instance: plutus-collector
+  ports:
+    - name: http
+      port: 9003
+      targetPort: http
+---
+# Source: plutus-collector/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: plutus-collector
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: metrics
+      port: 9100
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+
+---
+# Source: plutus-collector/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plutus-collector
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/managed-by: Helm
+spec:
+  # Fixed at 1 replica: a second would push the same batch twice. The backend replaces a day's
+  # rows per push, so that is harmless, but pointless.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: plutus-collector
+      app.kubernetes.io/instance: plutus-collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: plutus-collector
+        app.kubernetes.io/instance: plutus-collector
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+        - name: pusher
+          image: "ghcr.io/plutus-cloud/plutus-collector:0.1.0"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          ports:
+            - name: metrics
+              containerPort: 9100
+              protocol: TCP
+          env:
+            - name: OPENCOST_URL
+              value: "http://plutus-collector-opencost.plutus-collector.svc.cluster.local:9003"
+            - name: CLUSTER_NAME
+              value: "prod-us-east-1"
+            - name: CATCH_UP_DAYS
+              value: "3"
+            - name: PROMETHEUS_MODE
+              value: "external"
+            - name: PROMETHEUS_URL
+              value: "https://prometheus-prod-01-eu-west-0.grafana.net/api/prom"
+            - name: PROMETHEUS_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-cloud-read
+                  key: username
+            - name: PROMETHEUS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-cloud-read
+                  key: token
+            - name: PREFLIGHT_ENABLED
+              value: "true"
+            - name: PREFLIGHT_BLOCK_ON
+              value: "cluster_ambiguity"
+            - name: PLUTUS_INGEST_URL
+              value: "https://console.plutus-cloud.com/api/ingest/kubernetes-cost"
+            - name: CURRENCY
+              value: "USD"
+            - name: PUSH_SCHEDULE_UTC
+              value: "01:30"
+            - name: PUSH_JITTER_MINUTES
+              value: "20"
+            - name: EMPTY_RESULT
+              value: "fail"
+            - name: METRICS_ADDR
+              value: ":9100"
+            - name: PLUTUS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: plutus-collector-key
+                  key: api-key
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          # Readiness reports the data, liveness only the process: /readyz answers 503 while the
+          # last window came back empty or a preflight check is failing, so `kubectl get pods`
+          # shows 0/1 for a data problem without the pod being restarted for it.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          resources:
+            limits:
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+
+---
+# Source: plutus-collector/templates/opencost.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plutus-collector-opencost
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: opencost
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/component: opencost
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  # Recreate: with a PVC (mode none) a second pod could not mount the volume during a rollout,
+  # and a single OpenCost has no use for a surge.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opencost
+      app.kubernetes.io/instance: plutus-collector
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: plutus-collector-0.1.0
+        app.kubernetes.io/name: opencost
+        app.kubernetes.io/instance: plutus-collector
+        app.kubernetes.io/component: opencost
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      serviceAccountName: plutus-collector-opencost
+      automountServiceAccountToken: true
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: opencost
+          image: "ghcr.io/opencost/opencost:1.121.3@sha256:4cdd173253e5abba048dfe2cfa968707a5b59d774157d5356940d0d923a6c281"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            runAsNonRoot: true
+            runAsUser: 1001
+          ports:
+            - name: http
+              containerPort: 9003
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              cpu: 10m
+              memory: 128Mi
+          # OpenCost serves nothing, /healthz included, until it can reach its data source. When
+          # the store has no running scrape jobs yet (a Prometheus that started seconds ago) it
+          # exits, and the kubelet starts it again, so one or two restarts right after an install
+          # are normal. The startup probe is generous so a slow start is not mistaken for a hang.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 60
+            timeoutSeconds: 1
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 1
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 1
+          env:
+            - name: LOG_LEVEL
+              value: info
+            - name: API_PORT
+              value: "9003"
+            - name: INSTALL_NAMESPACE
+              value: "plutus-collector"
+            # Every allocation is labelled with this, and the pusher prefers a row's own cluster
+            # over clusterName, so it has to be the same value.
+            - name: CLUSTER_ID
+              value: "prod-us-east-1"
+            - name: CLOUD_COST_ENABLED
+              value: "false"
+            - name: CUSTOM_COST_ENABLED
+              value: "false"
+            - name: MCP_SERVER_ENABLED
+              value: "false"
+            - name: PROMETHEUS_SERVER_ENDPOINT
+              value: "https://prometheus-prod-01-eu-west-0.grafana.net/api/prom"
+            - name: PROMETHEUS_QUERY_RESOLUTION_SECONDS
+              value: "300"
+            - name: DB_BASIC_AUTH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-cloud-read
+                  key: username
+            - name: DB_BASIC_AUTH_PW
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-cloud-read
+                  key: token
+            - name: CONFIG_PATH
+              value: "/var/opencost-state"
+          volumeMounts:
+            - name: state
+              mountPath: /var/opencost-state
+      volumes:
+        - name: state
+          emptyDir:
+            {}
+---
+# Source: plutus-collector/templates/tests/preflight.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: plutus-collector-preflight
+  labels:
+    helm.sh/chart: plutus-collector-0.1.0
+    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/instance: plutus-collector
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: preflight
+      image: "ghcr.io/plutus-cloud/plutus-collector:0.1.0"
+      imagePullPolicy: IfNotPresent
+      args: ["preflight"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+          - ALL
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+      env:
+        - name: OPENCOST_URL
+          value: "http://plutus-collector-opencost.plutus-collector.svc.cluster.local:9003"
+        - name: CLUSTER_NAME
+          value: "prod-us-east-1"
+        - name: CATCH_UP_DAYS
+          value: "3"
+        - name: PROMETHEUS_MODE
+          value: "external"
+        - name: PROMETHEUS_URL
+          value: "https://prometheus-prod-01-eu-west-0.grafana.net/api/prom"
+        - name: PROMETHEUS_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: grafana-cloud-read
+              key: username
+        - name: PROMETHEUS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: grafana-cloud-read
+              key: token
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 64Mi
+

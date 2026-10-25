@@ -23,12 +23,51 @@ type fakeSource struct {
 	payload  any
 	rowCount int
 	err      error
+	emptyOK  bool
+
+	// perDate, when set, overrides rowCount per date key; collected records every date asked for.
+	perDate   map[string]int
+	collected []string
 }
 
 func (f *fakeSource) Name() string { return "FakeSource" }
 
+func (f *fakeSource) EmptyIsHealthy() bool { return f.emptyOK }
+
 func (f *fakeSource) Collect(ctx context.Context, start, end time.Time, dateKey string) (any, int, error) {
+	f.collected = append(f.collected, dateKey)
+	if n, ok := f.perDate[dateKey]; ok {
+		if n == 0 {
+			return f.payload, 0, f.err
+		}
+		return testPayload{Rows: n}, n, f.err
+	}
 	return f.payload, f.rowCount, f.err
+}
+
+// annotatingSource is a fakeSource that, like the Kubernetes source, accepts a collector block
+// and so gets a heartbeat for an empty window.
+type annotatingSource struct{ fakeSource }
+
+type annotated struct {
+	Inner testPayload
+	Meta  CollectorMeta
+}
+
+func (a *annotatingSource) Annotate(payload any, meta CollectorMeta) any {
+	if prior, ok := payload.(annotated); ok {
+		// Like the real source, keep a reason the payload already carries.
+		if meta.EmptyReason == "" {
+			meta.EmptyReason = prior.Meta.EmptyReason
+		}
+		return annotated{Inner: prior.Inner, Meta: meta}
+	}
+	p, _ := payload.(testPayload)
+	return annotated{Inner: p, Meta: meta}
+}
+
+func (a *annotatingSource) EmptyPayload(reason string) any {
+	return annotated{Meta: CollectorMeta{EmptyReason: reason}}
 }
 
 func oneRowSource() *fakeSource {
@@ -41,11 +80,13 @@ type fakePusher struct {
 	failUntil   int
 	calls       int
 	lastPayload any
+	payloads    []any
 }
 
 func (f *fakePusher) Push(ctx context.Context, payload any) (*ingest.Response, error) {
 	f.calls++
 	f.lastPayload = payload
+	f.payloads = append(f.payloads, payload)
 	if f.calls <= f.failUntil {
 		return nil, &ingest.RetryableError{Err: errors.New("simulated network failure")}
 	}

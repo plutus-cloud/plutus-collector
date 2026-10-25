@@ -1,0 +1,11 @@
+clusterName: prod-us-east-1
+currency: USD
+apiKey: test-api-key
+prometheus:
+  mode: external
+  external:
+    url: https://mimir.example.internal/prometheus
+    tenantId: team-a
+    auth:
+      type: mtls
+      existingSecret: mimir-client-tls

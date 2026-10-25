@@ -136,6 +136,9 @@ type Source struct {
 
 func (s *Source) Name() string { return "LiteLLM" }
 
+// EmptyIsHealthy: a gateway with no traffic in the window is a normal day, not a fault.
+func (s *Source) EmptyIsHealthy() bool { return true }
+
 func (s *Source) Collect(ctx context.Context, start, end time.Time, dateKey string) (any, int, error) {
 	entries, err := s.Logs.FetchSpendLogs(ctx, start, end)
 	if err != nil {

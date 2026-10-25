@@ -40,6 +40,10 @@ type Common struct {
 	// re-aggregates buys nothing.
 	PushInterval time.Duration
 
+	// PushIntervalSet is true when PUSH_INTERVAL_MINUTES was given explicitly. The Kubernetes
+	// collector then keeps the legacy fixed-interval loop instead of its daily UTC schedule.
+	PushIntervalSet bool
+
 	// MetricsAddr is the listen address for the /healthz and /metrics HTTP server.
 	MetricsAddr string
 
@@ -77,6 +81,34 @@ type OpenCostConfig struct {
 	// USD-denominated map and the backend asserts the currency itself, so asking an operator for
 	// one would invite a value nobody checks.
 	Currency string
+
+	// ScheduleHour and ScheduleMinute are the UTC time of the daily push (PUSH_SCHEDULE_UTC,
+	// "HH:MM", default 01:30), JitterMinutes the random delay added to it (default 20).
+	// Ignored when PUSH_INTERVAL_MINUTES is set.
+	ScheduleHour, ScheduleMinute int
+	JitterMinutes                int
+
+	// CatchUpDays is how many closed UTC days each push covers (default 3). Re-sending a day is
+	// idempotent in Plutus, and covering several is what lets a missed or empty day heal.
+	CatchUpDays int
+
+	// EmptyResultIgnore turns EMPTY_RESULT=ignore on. The default, "fail", treats a window with
+	// no priced allocations as a fault (readiness drops, last_push_success is 0).
+	EmptyResultIgnore bool
+
+	// PrometheusMode says where OpenCost's data lives: "bundled" (the chart's own Prometheus),
+	// "external" (one you run; the default for a standalone binary) or "none" (OpenCost's
+	// built-in collector data source). Reported to Plutus; it changes nothing locally.
+	PrometheusMode string
+
+	// PlutusIngestCAFile is a PEM bundle trusted in addition to the system roots when reaching
+	// PlutusIngestURL (PLUTUS_INGEST_CA_FILE), for a TLS-intercepting proxy or an internal gateway
+	// with a private CA. Verification is never disabled.
+	PlutusIngestCAFile string
+
+	// Prometheus and Preflight configure the checks that run before a push. See preflight.go.
+	Prometheus PrometheusConfig
+	Preflight  PreflightConfig
 }
 
 // LiteLLMConfig is Common plus what the LiteLLM collector needs.
@@ -140,6 +172,12 @@ const (
 	defaultHTTPTimeout      = 60 * time.Second
 	defaultMaxRetries       = 5
 	defaultRetryBaseDelay   = 5 * time.Second
+
+	defaultScheduleUTC    = "01:30"
+	defaultJitterMinutes  = 20
+	defaultCatchUpDays    = 3
+	maxCatchUpDays        = 14
+	defaultPrometheusMode = "external"
 )
 
 // loadCommon fills the shared fields and appends any problems to errs, rather than returning
@@ -176,6 +214,7 @@ func loadCommon(getenv func(string) string, defaultIngest string, errs *[]string
 			*errs = append(*errs, fmt.Sprintf("PUSH_INTERVAL_MINUTES must be a positive integer, got %q", raw))
 		} else {
 			intervalMin = v
+			c.PushIntervalSet = true
 		}
 	}
 	c.PushInterval = time.Duration(intervalMin) * time.Minute
@@ -223,7 +262,50 @@ func LoadOpenCost(getenv func(string) string) (*OpenCostConfig, error) {
 		OpenCostURL: stringOrDefault(getenv("OPENCOST_URL"), defaultOpenCostURL),
 		ClusterName: getenv("CLUSTER_NAME"),
 		Currency:    getenv("CURRENCY"),
+
+		JitterMinutes:  defaultJitterMinutes,
+		CatchUpDays:    defaultCatchUpDays,
+		PrometheusMode: stringOrDefault(getenv("PROMETHEUS_MODE"), defaultPrometheusMode),
+
+		PlutusIngestCAFile: getenv("PLUTUS_INGEST_CA_FILE"),
 	}
+
+	scheduleRaw := stringOrDefault(getenv("PUSH_SCHEDULE_UTC"), defaultScheduleUTC)
+	if t, err := time.Parse("15:04", scheduleRaw); err != nil {
+		errs = append(errs, fmt.Sprintf("PUSH_SCHEDULE_UTC must be a UTC time as HH:MM, got %q", scheduleRaw))
+	} else {
+		cfg.ScheduleHour, cfg.ScheduleMinute = t.Hour(), t.Minute()
+	}
+	if raw := getenv("PUSH_JITTER_MINUTES"); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v < 0 || v > 180 {
+			errs = append(errs, fmt.Sprintf("PUSH_JITTER_MINUTES must be an integer from 0 to 180, got %q", raw))
+		} else {
+			cfg.JitterMinutes = v
+		}
+	}
+	if raw := getenv("CATCH_UP_DAYS"); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v < 1 || v > maxCatchUpDays {
+			errs = append(errs, fmt.Sprintf("CATCH_UP_DAYS must be an integer from 1 to %d, got %q", maxCatchUpDays, raw))
+		} else {
+			cfg.CatchUpDays = v
+		}
+	}
+	switch strings.ToLower(getenv("EMPTY_RESULT")) {
+	case "", "fail":
+	case "ignore":
+		cfg.EmptyResultIgnore = true
+	default:
+		errs = append(errs, fmt.Sprintf("EMPTY_RESULT must be \"fail\" or \"ignore\", got %q", getenv("EMPTY_RESULT")))
+	}
+	switch cfg.PrometheusMode {
+	case "bundled", "external", "none":
+	default:
+		errs = append(errs, fmt.Sprintf("PROMETHEUS_MODE must be bundled, external or none, got %q", cfg.PrometheusMode))
+	}
+	cfg.Prometheus = loadPrometheus(getenv, &errs)
+	cfg.Preflight = loadPreflight(getenv, &errs)
 
 	if cfg.ClusterName == "" {
 		errs = append(errs, "CLUSTER_NAME is required (no default)")
