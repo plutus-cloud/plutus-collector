@@ -52,6 +52,13 @@ portforward() { # namespace target local:remote
 
 received() { curl -sk https://localhost:18443/received; }
 
+# The newest pusher pod. During a rollout whose new pod is not Ready, the old one is kept, so
+# deploy/<name> can name either.
+pusher_pod() {
+  kubectl -n "$ns" get pods -l "app.kubernetes.io/name=plutus-collector,app.kubernetes.io/instance=$release" \
+    --sort-by=.metadata.creationTimestamp -o name | tail -1
+}
+
 # ---------------------------------------------------------------------------------------------
 log "building images"
 docker build --build-arg VERSION=e2e -t plutus-collector:e2e .
@@ -241,26 +248,36 @@ kubectl -n e2e rollout status deploy/empty-prom --timeout=180s
 
 helm upgrade "$release" chart --namespace "$ns" --reuse-values \
   --set prometheus.mode=external --set prometheus.external.url=http://empty-prom.e2e.svc.cluster.local:9090
-kubectl -n "$ns" rollout status "deploy/$release" --timeout=180s
+# The new pusher pod is not Ready (its preflight fails), so the rollout of the pusher never
+# completes and the old pod stays: a broken configuration does not replace a working agent. Wait
+# for the new pod to be running instead.
 kubectl -n "$ns" rollout status "deploy/$release-opencost" --timeout=420s
+for i in $(seq 1 60); do
+  pod="$(pusher_pod)"
+  [ "$(kubectl -n "$ns" get "$pod" -o jsonpath='{.status.containerStatuses[0].started}' 2>/dev/null)" = "true" ] \
+    && kubectl -n "$ns" get "$pod" -o jsonpath='{.spec.containers[0].env[?(@.name=="PROMETHEUS_URL")].value}' | grep -q empty-prom && break
+  sleep 5
+done
+pod="$(pusher_pod)"
+echo "new pusher pod: $pod"
 
 if helm test "$release" --namespace "$ns" >"$workdir/negative.out" 2>&1; then
   cat "$workdir/negative.out"; die "helm test passed against a Prometheus that does not scrape OpenCost"
 fi
 cat "$workdir/negative.out"
 kubectl -n "$ns" logs "pod/$release-preflight" 2>/dev/null | tee "$workdir/negative-preflight.out" || true
-kubectl -n "$ns" exec "deploy/$release" -- /plutus-collector preflight >"$workdir/negative-preflight.out" 2>&1 || true
+kubectl -n "$ns" exec "$pod" -- /plutus-collector preflight >"$workdir/negative-preflight.out" 2>&1 || true
 grep -q "opencost_series" "$workdir/negative-preflight.out" || die "the preflight did not name opencost_series"
 grep -q "nothing is scraping OpenCost" "$workdir/negative-preflight.out" || die "the preflight message does not say what to fix"
 
-portforward "$ns" "svc/$release" 19100:9100
+portforward "$ns" "$pod" 19100:9100
 sleep 5
 code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:19100/readyz)"
 [ "$code" = "503" ] || die "/readyz returned $code, expected 503"
 curl -s http://localhost:19100/metrics | grep -q 'plutus_collector_preflight_ok{check="opencost_series"} 0' \
   || die "the preflight metric for opencost_series is not 0"
 
-if kubectl -n "$ns" exec "deploy/$release" -- /plutus-collector --once "--window=$start,$end"; then
+if kubectl -n "$ns" exec "$pod" -- /plutus-collector --once "--window=$start,$end"; then
   die "a one-shot push of an empty window should exit non-zero"
 fi
 received >"$workdir/received2.json"

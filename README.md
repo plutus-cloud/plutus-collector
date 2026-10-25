@@ -102,10 +102,12 @@ expected and is not marked unready (`empty_reason: "no_history"`).
 
 **Footprint.** One extra pod for the bundled Prometheus (requests `50m` CPU and `256Mi`, limit
 `1Gi`) and one for OpenCost (`10m` and `128Mi`, limit `1Gi`), plus the pusher (`10m`, `32Mi`, limit
-`64Mi`). These are the chart's resource settings, not measurements. How much Prometheus and
-OpenCost actually use grows with the number of containers; `test/e2e/run.sh` prints their working
-set on a kind cluster, which is a check on the order of magnitude and not a sizing guide for your
-cluster.
+`64Mi`). These are the chart's resource settings. Measured once, in the kind test on one amd64
+node with about 120 containers running (100 of them idle `pause` containers) and a 60-second scrape
+interval: the bundled Prometheus's working set was 132 to 148 MiB with 1,863 series, and OpenCost's
+66 to 73 MiB, over two runs. That is one machine, not a sizing guide: usage grows with the number of
+containers, and 1,000 or 10,000 containers have not been measured. `test/e2e/run.sh` prints the same
+figures so you can see them on your own runner.
 
 Prefer not to put your API key in Helm values/history? Create the Secret yourself first:
 
@@ -199,6 +201,10 @@ contract:
 Optionally `--set prometheus.external.serviceMonitor.enabled=true` renders a `ServiceMonitor` for
 OpenCost, only when the prometheus-operator CRD is present.
 
+What has been run: the chart's own bundled Prometheus, and (as the failing case) a plain Prometheus
+that does not scrape OpenCost, both in the kind test. Everything else in this table is derived from
+the API shape and authentication each store uses, not from an install against it.
+
 | Store | Works | How |
 |---|---|---|
 | Prometheus you run | yes | add the scrape job above |
@@ -210,6 +216,37 @@ OpenCost, only when the prometheus-operator CRD is present.
 | Amazon Managed Prometheus | needs a SigV4 proxy | run an `aws-sigv4-proxy` sidecar through `opencost.extraContainers` (and IRSA) and point `url` at it |
 | Azure Monitor managed Prometheus | not directly | needs an AAD-token proxy; OpenCost has no AAD auth |
 | Remote-write-only or agent-mode Prometheus, Datadog, New Relic | no | OpenCost needs a PromQL query endpoint |
+
+Recipes (untested sketches; adapt and verify against your store):
+
+```yaml
+# Amazon Managed Prometheus: a SigV4-signing proxy next to OpenCost, with IAM permission to query
+# the workspace (for example through IRSA on opencost's service account), and the store URL pointed at it.
+prometheus:
+  mode: external
+  external:
+    url: http://localhost:8005/workspaces/<workspace-id>
+opencost:
+  extraContainers:
+    - name: sigv4-proxy
+      image: public.ecr.aws/aws-observability/aws-sigv4-proxy:<a version you have pinned>
+      args: ["--name", "aps", "--region", "<region>", "--host", "aps-workspaces.<region>.amazonaws.com", "--port", ":8005"]
+```
+
+The agent's preflight cannot reach a store that is only reachable as `localhost` inside OpenCost's
+pod, so set `preflight.enabled=false` for that case.
+
+```yaml
+# Thanos: the Query (or Query Frontend) endpoint is a Prometheus-compatible query API.
+prometheus:
+  mode: external
+  external:
+    url: http://thanos-query-frontend.monitoring.svc:9090
+    clusterLabel: cluster      # if one Thanos serves several clusters
+```
+
+OpenCost's own Thanos settings (query offset, resolution) are not exposed as values; pass any you
+need through `opencost.extraEnv`, using the names in OpenCost's documentation.
 
 Authentication OpenCost supports natively: basic, bearer, mTLS and `X-Scope-OrgID`
 (`prometheus.external.auth.type`: `none`, `basic`, `bearer`, `mtls`, always from a Secret you create,
@@ -397,6 +434,7 @@ Other symptoms:
 | Symptom | Cause |
 |---|---|
 | OpenCost restarts once or twice right after install | Expected. It exits when its Prometheus has no running scrape jobs yet (`no running jobs on Prometheus` in its log) and starts cleanly once the first scrape is configured, within a minute or two. If it keeps restarting, check that the Prometheus pod is Running. |
+| `helm upgrade --wait` times out and the old pusher pod stays | Deliberate: the new pod is not Ready because a data check fails, so the rollout does not replace a working agent. `kubectl logs` on the new pod, or `helm test`, names the check. |
 | Pusher `0/1` the morning after install | Read `kubectl logs`: the failing check and its fix are in the line. |
 | Rows have `cluster: default-cluster` | You are on an OpenCost you run (`opencost.enabled=false`) that has its own cluster id; set it to `clusterName`. With the chart's OpenCost this cannot happen. |
 | Costs look like GCP prices on a non-cloud cluster | `pricing` warning: set `opencost.pricing.custom`. |
