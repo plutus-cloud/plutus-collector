@@ -5,9 +5,8 @@ need it: Prometheus from OpenCost (queries) and the pusher and `helm test` pods 
 OpenCost from Prometheus (scrapes) and the pusher. Egress is not restricted. Enforcement depends
 on the cluster's network plugin; without one these objects have no effect.
 
-The pusher pod and the helm test pod carry the release's selector labels and no component label,
-which is how they are told apart from OpenCost and Prometheus (they share the name and instance
-labels). With prometheus.mode=external the OpenCost policy is not rendered, because the scraper
+The pusher pod and the helm test pod carry the release's selector labels (name plutus-collector),
+which OpenCost's and Prometheus's pods do not share. With prometheus.mode=external the OpenCost policy is not rendered, because the scraper
 is the customer's and not known here.
 */}}
 {{- $c := include "plutus-collector.cfg" . | fromYaml -}}
@@ -35,9 +34,6 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "plutus-collector.selectorLabels" . | nindent 14 }}
-            matchExpressions:
-              - key: app.kubernetes.io/component
-                operator: DoesNotExist
       ports:
         - port: 9090
           protocol: TCP
@@ -67,9 +63,6 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "plutus-collector.selectorLabels" . | nindent 14 }}
-            matchExpressions:
-              - key: app.kubernetes.io/component
-                operator: DoesNotExist
       ports:
         - port: 9003
           protocol: TCP

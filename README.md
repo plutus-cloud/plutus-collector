@@ -362,7 +362,7 @@ whole UTC days; a shorter window replaces the day with a partial one.
 
 ### Preflight checks and troubleshooting
 
-The agent checks the data behind OpenCost at startup, before each push and every 15 minutes. Run
+The agent checks the data behind OpenCost at startup, before each push and every 5 minutes. Run
 the same checks by hand:
 
 ```bash
@@ -396,7 +396,7 @@ Other symptoms:
 
 | Symptom | Cause |
 |---|---|
-| OpenCost pod restarting right after install | It waits for its Prometheus and retries for several minutes before serving `/healthz`; the startup probe allows five. On a cluster that is short of resources, check the Prometheus pod first. |
+| OpenCost restarts once or twice right after install | Expected. It exits when its Prometheus has no running scrape jobs yet (`no running jobs on Prometheus` in its log) and starts cleanly once the first scrape is configured, within a minute or two. If it keeps restarting, check that the Prometheus pod is Running. |
 | Pusher `0/1` the morning after install | Read `kubectl logs`: the failing check and its fix are in the line. |
 | Rows have `cluster: default-cluster` | You are on an OpenCost you run (`opencost.enabled=false`) that has its own cluster id; set it to `clusterName`. With the chart's OpenCost this cannot happen. |
 | Costs look like GCP prices on a non-cloud cluster | `pricing` warning: set `opencost.pricing.custom`. |

@@ -22,9 +22,6 @@ spec:
             matchLabels:
               app.kubernetes.io/name: plutus-collector
               app.kubernetes.io/instance: plutus-collector
-            matchExpressions:
-              - key: app.kubernetes.io/component
-                operator: DoesNotExist
       ports:
         - port: 9003
           protocol: TCP
@@ -370,9 +367,10 @@ spec:
             requests:
               cpu: 10m
               memory: 128Mi
-          # OpenCost serves nothing, /healthz included, until it can reach its data source, and it
-          # retries that for several minutes before giving up. The startup probe has to outlast
-          # that, or the kubelet restarts it while it is still waiting for Prometheus.
+          # OpenCost serves nothing, /healthz included, until it can reach its data source. When
+          # the store has no running scrape jobs yet (a Prometheus that started seconds ago) it
+          # exits, and the kubelet starts it again, so one or two restarts right after an install
+          # are normal. The startup probe is generous so a slow start is not mistaken for a hang.
           startupProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 10

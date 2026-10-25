@@ -44,28 +44,22 @@ Labels and selector labels for the OpenCost and Prometheus components. Called wi
 root (the chart context) and component.
 */}}
 {{- define "plutus-collector.componentSelectorLabels" -}}
-{{- if eq .component "opencost" -}}
-{{- /* The v1 chart's OpenCost selector, unchanged: a Deployment's selector is immutable, so an
-       upgrade from v1 only works in place if it stays the same. */ -}}
-app.kubernetes.io/name: opencost
+{{- /* The name label is the component's own, never the pusher's: the pusher's Deployment and
+       Service select on name and instance alone, so a component that shared its name label
+       would be matched by them. For OpenCost this is also the v1 chart's selector, unchanged,
+       which an in-place upgrade from v1 needs because a Deployment's selector is immutable. */ -}}
+app.kubernetes.io/name: {{ .component }}
 app.kubernetes.io/instance: {{ .root.Release.Name }}
-{{- else -}}
-app.kubernetes.io/name: {{ include "plutus-collector.name" .root }}
-app.kubernetes.io/instance: {{ .root.Release.Name }}
-app.kubernetes.io/component: {{ .component }}
-{{- end -}}
 {{- end -}}
 
 {{/*
-Labels for an object (and a pod template) of a component. OpenCost's selector has no component
-label, so it is added here.
+Labels for an object (and a pod template) of a component: the selector labels plus a component
+label that is not part of any selector.
 */}}
 {{- define "plutus-collector.componentLabels" -}}
 helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version | replace "+" "_" }}
 {{ include "plutus-collector.componentSelectorLabels" . }}
-{{- if eq .component "opencost" }}
-app.kubernetes.io/component: opencost
-{{- end }}
+app.kubernetes.io/component: {{ .component }}
 app.kubernetes.io/managed-by: {{ .root.Release.Service }}
 {{- end -}}
 

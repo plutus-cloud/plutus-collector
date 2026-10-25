@@ -69,7 +69,7 @@ pusher:
       memory: 64Mi
 
 preflight:
-  # Checks that the data behind OpenCost is there, at startup, before each push and every 15
+  # Checks that the data behind OpenCost is there, at startup, before each push and every 5
   # minutes. Results go to /readyz, /metrics, the log and the heartbeat sent to Plutus.
   enabled: true
   # Check ids whose failure stops a push instead of only being reported. cluster_ambiguity

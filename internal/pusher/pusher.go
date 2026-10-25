@@ -126,7 +126,7 @@ type Config struct {
 	PrometheusMode string
 
 	// BlockOn lists the preflight check ids whose failure stops a push. PreflightInterval is how
-	// often the checks re-run between pushes (default 15 minutes), so readiness follows a fix
+	// often the checks re-run between pushes (default 5 minutes), so readiness follows a fix
 	// within minutes rather than at the next daily push.
 	BlockOn           []string
 	PreflightInterval time.Duration
@@ -220,7 +220,7 @@ func (p *Pusher) Run(ctx context.Context) {
 	if p.Preflight != nil {
 		interval := p.Config.PreflightInterval
 		if interval <= 0 {
-			interval = 15 * time.Minute
+			interval = 5 * time.Minute
 		}
 		t := time.NewTicker(interval)
 		defer t.Stop()

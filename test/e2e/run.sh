@@ -182,8 +182,15 @@ jq -e '[.[] | .rows[]? | select(.namespace == "sample" and (.controller_name == 
   "$workdir/received.json" >/dev/null || die "no row attributes cost to the sample Deployment web"
 jq -e '[.[] | .rows[]? | select(.namespace == "sample" and .controller_name == "web" and (.labels.app == "web"))] | length > 0' \
   "$workdir/received.json" >/dev/null || die "the web rows carry no pod labels"
-jq -e '[.[] | .rows[]? | select(.namespace == "sample" and .controller_name == "burn" and .cpu_cost > 0)] | length > 0' \
-  "$workdir/received.json" >/dev/null || die "the burner without requests has no CPU cost, so cAdvisor usage is not flowing"
+# A pod with no requests is only allocated CPU if cAdvisor usage reaches the store: OpenCost's
+# allocation is the larger of the request and the observed usage. Row costs are rounded to cents,
+# which is below the resolution of a fifteen-minute window for a pod this small, so the proof is
+# the allocation series itself, read from the bundled Prometheus.
+jq -e '[.[] | .rows[]? | select(.namespace == "sample" and .controller_name == "burn")] | length > 0' \
+  "$workdir/received.json" >/dev/null || die "the burner without requests has no row"
+portforward "$ns" "svc/$release-prometheus" 19090:9090
+burn_alloc="$(curl -s --data-urlencode 'query=max(container_cpu_allocation{namespace="sample",pod=~"burn-.*"})' http://localhost:19090/api/v1/query | jq -r '.data.result[0].value[1] // "0"')"
+awk -v v="$burn_alloc" 'BEGIN { exit !(v > 0) }' || die "the burner without requests is allocated no CPU ($burn_alloc), so cAdvisor usage is not flowing"
 jq -e '[.[] | .collector? | select(. != null) | select(.prometheus_mode == "bundled" and .version == "e2e")] | length > 0' \
   "$workdir/received.json" >/dev/null || die "pushes carry no collector block"
 echo "rows arrived and carry the expected attribution"
@@ -195,14 +202,15 @@ if [ "$footprint_pods" -gt 0 ]; then
   kubectl -n pause create deployment pause --image=registry.k8s.io/pause:3.9 --replicas="$footprint_pods" --dry-run=client -o yaml | kubectl apply -f -
   kubectl -n pause rollout status deploy/pause --timeout=300s || true
   sleep 180
-  portforward "$ns" "svc/$release-prometheus" 19090:9090
   for pod in prometheus opencost; do
     q="container_memory_working_set_bytes{namespace=\"$ns\",pod=~\".*-$pod-.*\",container=\"$pod\"}"
     mib="$(curl -s --data-urlencode "query=$q" http://localhost:19090/api/v1/query | jq -r '.data.result[0].value[1] // empty' | awk '{printf "%.0f", $1/1048576}')"
     echo "footprint: $pod working set ${mib:-unknown} MiB with $footprint_pods pause pods (kind, one node; not a sizing guide)"
   done
-  series="$(curl -s --data-urlencode 'query=prometheus_tsdb_head_series' http://localhost:19090/api/v1/query | jq -r '.data.result[0].value[1] // "unknown"')"
-  echo "footprint: bundled Prometheus head series: $series"
+  series="$(curl -s --data-urlencode 'query=count({__name__=~".+"})' http://localhost:19090/api/v1/query | jq -r '.data.result[0].value[1] // "unknown"')"
+  echo "footprint: series in the bundled Prometheus: $series"
+  # A kind node schedules at most 110 pods; free the room the negative test below needs.
+  kubectl delete namespace pause --wait=true >/dev/null
 fi
 
 # ---------------------------------------------------------------------------------------------

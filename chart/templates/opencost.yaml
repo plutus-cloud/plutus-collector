@@ -13,8 +13,12 @@ commands in any pod on the node, which is why that mode needs an explicit acknow
 {{- $ctx := dict "root" . "component" "opencost" }}
 {{- $none := eq $c.prometheus.mode "none" }}
 {{- $custom := eq $c.opencost.pricing.provider "custom" }}
-{{- $state := or $none $custom }}
-{{- $statePath := ternary "/var/opencost-state" "/tmp/custom-config" $none }}
+{{- /* OpenCost's image runs as an unprivileged user with no writable /var/configs, its default
+       CONFIG_PATH. Without a writable path it cannot materialise its pricing configuration, logs
+       "No pricing found for key=default" and emits no node prices, so every cost is zero and the
+       preflight fails opencost_series. A state volume is therefore always mounted. */ -}}
+{{- $state := true }}
+{{- $statePath := "/var/opencost-state" }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -186,9 +190,10 @@ spec:
               containerPort: 9003
           resources:
             {{- toYaml $c.opencost.resources | nindent 12 }}
-          # OpenCost serves nothing, /healthz included, until it can reach its data source, and it
-          # retries that for several minutes before giving up. The startup probe has to outlast
-          # that, or the kubelet restarts it while it is still waiting for Prometheus.
+          # OpenCost serves nothing, /healthz included, until it can reach its data source. When
+          # the store has no running scrape jobs yet (a Prometheus that started seconds ago) it
+          # exits, and the kubelet starts it again, so one or two restarts right after an install
+          # are normal. The startup probe is generous so a slow start is not mistaken for a hang.
           startupProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 10

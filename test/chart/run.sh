@@ -123,6 +123,9 @@ awk '/name: plutus-collector-opencost$/{f=1} f&&/matchLabels:/{m=1;next} m&&/app
   || fail "OpenCost's Deployment selector is not the v1 selector (name: opencost)"
 grep -q "enable-lifecycle" "$tmp/default.yaml" && fail "the bundled Prometheus is given a lifecycle flag Prometheus 3 does not accept in this form"
 
+# No component's selector may match the pusher's Deployment or Service (name plutus-collector).
+grep -q "app.kubernetes.io/name: prometheus$" "$tmp/default.yaml" || fail "the Prometheus pods do not carry their own name label"
+
 # Network policy: ingress only, on by default, absent where the peers are not known.
 [ "$(grep -c '^kind: NetworkPolicy' "$tmp/default.yaml")" = 2 ] || fail "default render should have a NetworkPolicy for Prometheus and one for OpenCost"
 grep -q "Egress" "$tmp/default.yaml" && fail "network policies must not restrict egress"

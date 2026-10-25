@@ -6,16 +6,15 @@ metadata:
   name: plutus-collector-prometheus
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: prometheus
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: prometheus
     app.kubernetes.io/managed-by: Helm
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: plutus-collector
+      app.kubernetes.io/name: prometheus
       app.kubernetes.io/instance: plutus-collector
-      app.kubernetes.io/component: prometheus
   policyTypes: ["Ingress"]
   ingress:
     - from:
@@ -27,9 +26,6 @@ spec:
             matchLabels:
               app.kubernetes.io/name: plutus-collector
               app.kubernetes.io/instance: plutus-collector
-            matchExpressions:
-              - key: app.kubernetes.io/component
-                operator: DoesNotExist
       ports:
         - port: 9090
           protocol: TCP
@@ -55,16 +51,12 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: plutus-collector
+              app.kubernetes.io/name: prometheus
               app.kubernetes.io/instance: plutus-collector
-              app.kubernetes.io/component: prometheus
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: plutus-collector
               app.kubernetes.io/instance: plutus-collector
-            matchExpressions:
-              - key: app.kubernetes.io/component
-                operator: DoesNotExist
       ports:
         - port: 9003
           protocol: TCP
@@ -90,7 +82,7 @@ metadata:
   name: plutus-collector-prometheus
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: prometheus
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: prometheus
     app.kubernetes.io/managed-by: Helm
@@ -103,7 +95,7 @@ metadata:
   name: plutus-collector-prometheus
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: prometheus
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: prometheus
     app.kubernetes.io/managed-by: Helm
@@ -160,7 +152,7 @@ metadata:
   name: plutus-collector-prometheus
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: prometheus
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: prometheus
     app.kubernetes.io/managed-by: Helm
@@ -226,7 +218,7 @@ metadata:
   name: plutus-collector-prometheus
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: prometheus
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: prometheus
     app.kubernetes.io/managed-by: Helm
@@ -262,7 +254,7 @@ metadata:
   name: plutus-collector-prometheus
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: prometheus
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: prometheus
     app.kubernetes.io/managed-by: Helm
@@ -303,16 +295,15 @@ metadata:
   name: plutus-collector-prometheus
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: prometheus
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: prometheus
     app.kubernetes.io/managed-by: Helm
 spec:
   type: ClusterIP
   selector:
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: prometheus
     app.kubernetes.io/instance: plutus-collector
-    app.kubernetes.io/component: prometheus
   ports:
     - name: http
       port: 9090
@@ -498,9 +489,10 @@ spec:
             requests:
               cpu: 10m
               memory: 128Mi
-          # OpenCost serves nothing, /healthz included, until it can reach its data source, and it
-          # retries that for several minutes before giving up. The startup probe has to outlast
-          # that, or the kubelet restarts it while it is still waiting for Prometheus.
+          # OpenCost serves nothing, /healthz included, until it can reach its data source. When
+          # the store has no running scrape jobs yet (a Prometheus that started seconds ago) it
+          # exits, and the kubelet starts it again, so one or two restarts right after an install
+          # are normal. The startup probe is generous so a slow start is not mistaken for a hang.
           startupProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 10
@@ -538,6 +530,15 @@ spec:
               value: "http://plutus-collector-prometheus.plutus-collector.svc.cluster.local:9090"
             - name: PROMETHEUS_QUERY_RESOLUTION_SECONDS
               value: "300"
+            - name: CONFIG_PATH
+              value: "/var/opencost-state"
+          volumeMounts:
+            - name: state
+              mountPath: /var/opencost-state
+      volumes:
+        - name: state
+          emptyDir:
+            {}
 
 ---
 # Source: plutus-collector/templates/prometheus.yaml
@@ -547,7 +548,7 @@ metadata:
   name: plutus-collector-prometheus
   labels:
     helm.sh/chart: plutus-collector-0.1.0
-    app.kubernetes.io/name: plutus-collector
+    app.kubernetes.io/name: prometheus
     app.kubernetes.io/instance: plutus-collector
     app.kubernetes.io/component: prometheus
     app.kubernetes.io/managed-by: Helm
@@ -559,14 +560,13 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      app.kubernetes.io/name: plutus-collector
+      app.kubernetes.io/name: prometheus
       app.kubernetes.io/instance: plutus-collector
-      app.kubernetes.io/component: prometheus
   template:
     metadata:
       labels:
         helm.sh/chart: plutus-collector-0.1.0
-        app.kubernetes.io/name: plutus-collector
+        app.kubernetes.io/name: prometheus
         app.kubernetes.io/instance: plutus-collector
         app.kubernetes.io/component: prometheus
         app.kubernetes.io/managed-by: Helm
