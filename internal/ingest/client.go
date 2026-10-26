@@ -38,7 +38,7 @@ func (e *RetryableError) Unwrap() error { return e.Err }
 
 // Push sends the batch and returns the parsed Response. Callers should log resp.Rejected /
 // resp.Errors even on a 2xx status — a partial-acceptance response is the customer's only
-// visibility into which rows the backend couldn't ingest (design doc §1).
+// visibility into which rows the backend couldn't ingest.
 func (c *Client) Push(ctx context.Context, payload any) (*Response, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {

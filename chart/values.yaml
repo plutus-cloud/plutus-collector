@@ -100,7 +100,7 @@ opencost:
       memory: 1Gi
   pricing:
     # auto: OpenCost detects the cloud provider and uses its price list. On a cluster it cannot
-    #   identify (on-prem, Hetzner, ...) it falls back to built-in default rates, and the
+    #   identify (on-premises or bare metal) it falls back to built-in default rates, and the
     #   preflight warns about it.
     # custom: use the rates below.
     provider: auto

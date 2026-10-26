@@ -177,16 +177,16 @@ spec:
             - name: PROMETHEUS_MODE
               value: "external"
             - name: PROMETHEUS_URL
-              value: "https://prometheus-prod-01-eu-west-0.grafana.net/api/prom"
+              value: "https://prometheus-prod-00-example.grafana.net/api/prom"
             - name: PROMETHEUS_USERNAME
               valueFrom:
                 secretKeyRef:
-                  name: grafana-cloud-read
+                  name: grafana-cloud-credentials
                   key: username
             - name: PROMETHEUS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: grafana-cloud-read
+                  name: grafana-cloud-credentials
                   key: token
             - name: PREFLIGHT_ENABLED
               value: "true"
@@ -325,18 +325,18 @@ spec:
             - name: MCP_SERVER_ENABLED
               value: "false"
             - name: PROMETHEUS_SERVER_ENDPOINT
-              value: "https://prometheus-prod-01-eu-west-0.grafana.net/api/prom"
+              value: "https://prometheus-prod-00-example.grafana.net/api/prom"
             - name: PROMETHEUS_QUERY_RESOLUTION_SECONDS
               value: "300"
             - name: DB_BASIC_AUTH_USERNAME
               valueFrom:
                 secretKeyRef:
-                  name: grafana-cloud-read
+                  name: grafana-cloud-credentials
                   key: username
             - name: DB_BASIC_AUTH_PW
               valueFrom:
                 secretKeyRef:
-                  name: grafana-cloud-read
+                  name: grafana-cloud-credentials
                   key: token
             - name: CONFIG_PATH
               value: "/var/opencost-state"
@@ -390,16 +390,16 @@ spec:
         - name: PROMETHEUS_MODE
           value: "external"
         - name: PROMETHEUS_URL
-          value: "https://prometheus-prod-01-eu-west-0.grafana.net/api/prom"
+          value: "https://prometheus-prod-00-example.grafana.net/api/prom"
         - name: PROMETHEUS_USERNAME
           valueFrom:
             secretKeyRef:
-              name: grafana-cloud-read
+              name: grafana-cloud-credentials
               key: username
         - name: PROMETHEUS_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: grafana-cloud-read
+              name: grafana-cloud-credentials
               key: token
       resources:
         requests:

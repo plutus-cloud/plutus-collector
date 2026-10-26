@@ -144,7 +144,7 @@ which the chart requires to be at least `pusher.catchUpDays + 1` whole days.
 #### Pricing
 
 OpenCost prices CPU and memory from your cloud provider's price list when it can identify the
-provider. On a cluster it cannot identify (on-premises, Hetzner, and so on) it falls back to
+provider. On a cluster it cannot identify (on-premises or bare metal, for example) it falls back to
 built-in default rates, so the dollar figures are an estimate shaped like a public-cloud price
 list. The preflight warns (`pricing`) when that is the case. Set your own rates:
 

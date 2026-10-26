@@ -1,7 +1,6 @@
-# The v1 values file Plutus's own cluster uses (its Grafana Cloud URL substituted in), kept as a
-# regression input for the v1 translation shim. It must render exactly what
-# v1-plutus-values.v2-equivalent.yaml renders.
-clusterName: "plutus-hetzner-app-box"
+# A v1 values file kept as a regression input for the v1 translation shim. It must render
+# exactly what v1-external-prometheus.v2-equivalent.yaml renders.
+clusterName: "my-cluster"
 currency: "USD"
 imagePullSecrets:
   - name: plutus-collector-ghcr-pull
@@ -13,7 +12,7 @@ opencost:
   enabled: true
   opencost:
     exporter:
-      defaultClusterId: "plutus-hetzner-app-box"
+      defaultClusterId: "my-cluster"
     prometheus:
       existingSecretName: plutus-collector-opencost-prometheus
       username_key: username
@@ -22,12 +21,12 @@ opencost:
         enabled: false
       external:
         enabled: true
-        url: "https://prometheus-prod-01-eu-west-0.grafana.net/api/prom"
+        url: "https://prometheus.example.com/api/prom"
     customPricing:
       enabled: true
       provider: custom
       costModel:
-        description: "Hetzner Cloud cx33 (nbg1)"
+        description: "Bare metal"
         CPU: "0.003154"
         spotCPU: "0.003154"
         RAM: "0.000423"

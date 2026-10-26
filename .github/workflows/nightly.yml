@@ -1,8 +1,7 @@
 name: Nightly Security Scan
 
-# The recurring half of this repo's scanning — same split as plutus-cloud/plutus's
-# nightly-tests.yml `security-scan` job, extracted into its own file here since this repo has
-# no other nightly suite to ride alongside.
+# The recurring half of this repo's scanning — kept in its own file since this
+# repo has no other nightly suite to ride alongside.
 #
 # Answers two questions security.yml's PR-time scan cannot:
 #
@@ -10,7 +9,7 @@ name: Nightly Security Scan
 # *tag written in the Dockerfile* and opens a PR when a newer tag exists — it says nothing
 # about CVEs that accumulate inside a base image tag that never moves. Scanning the *published*
 # image (ghcr.io/plutus-cloud/plutus-collector:main) rather than building fresh here matters for
-# the same reason it does in the main repo: a fresh build would pull today's base layer and
+# the same reason as always: a fresh build would pull today's base layer and
 # report a result the actually-shipped image doesn't have.
 #
 # `osv-scanner` vs. Dependabot's Go module alerts. Same idea, different delivery — a scheduled
@@ -20,7 +19,7 @@ name: Nightly Security Scan
 # the file under review is the thing being linted.
 on:
   schedule:
-    - cron: '0 4 * * *' # 04:00 UTC daily, staggered an hour after the main repo's 03:00 slot
+    - cron: '0 4 * * *' # 04:00 UTC daily
     # Weekly full-severity audit — the manual full_security_audit input below existed with no
     # scheduled trigger, so nobody was ever prompted to run it. This cron is distinguished from
     # the daily one at the step level via github.event.schedule (see FULL_AUDIT below), rather
@@ -52,7 +51,7 @@ jobs:
       - name: Load scanner version pins
         run: grep -E '^[A-Z][A-Z0-9_]*=' .github/scanner-versions.env >> "$GITHUB_ENV"
 
-      # Checksum-verified, same reasoning as the main repo's copy: this job pulls a GHCR image,
+      # Checksum-verified, this job pulls a GHCR image,
       # which is exactly the condition under which an unverified scanner binary stops being a
       # low-stakes risk.
       - name: Install scanners
@@ -103,7 +102,7 @@ jobs:
           esac
           exit "$rc"
 
-      # Same freshness signal as the main repo's copy — warns only, never fails. None of these
+      # Freshness signal — warns only, never fails. None of these
       # pins is Dependabot-watched (curl'd release assets, not `uses:` refs).
       - name: Check scanner pins against upstream releases
         env:

@@ -63,7 +63,7 @@ Thanos, point `prometheus.external.url` at the query endpoint.
 v1:
 
 ```yaml
-clusterName: plutus-hetzner-app-box
+clusterName: my-cluster
 currency: USD
 existingSecret: plutus-collector-api-key
 pushIntervalMinutes: 1440
@@ -71,15 +71,15 @@ opencost:
   enabled: true
   opencost:
     exporter:
-      defaultClusterId: plutus-hetzner-app-box
+      defaultClusterId: my-cluster
     prometheus:
-      existingSecretName: grafana-cloud-read
+      existingSecretName: prometheus-credentials
       username_key: username
       password_key: password
       internal: { enabled: false }
       external:
         enabled: true
-        url: https://prometheus-prod-01-eu-west-0.grafana.net/api/prom
+        url: https://prometheus.example.com/api/prom
     customPricing:
       enabled: true
       provider: custom
@@ -89,14 +89,14 @@ opencost:
 v2:
 
 ```yaml
-clusterName: plutus-hetzner-app-box
+clusterName: my-cluster
 currency: USD
 existingSecret: plutus-collector-api-key
 prometheus:
   mode: external
   external:
-    url: https://prometheus-prod-01-eu-west-0.grafana.net/api/prom
-    auth: {type: basic, existingSecret: grafana-cloud-read, usernameKey: username, passwordKey: password}
+    url: https://prometheus.example.com/api/prom
+    auth: {type: basic, existingSecret: prometheus-credentials, usernameKey: username, passwordKey: password}
 opencost:
   pricing:
     provider: custom
@@ -104,7 +104,7 @@ opencost:
 ```
 
 The repository's chart tests render a v1 file of this shape and its v2 equivalent and require the two
-to be identical (`test/chart/values/v1-plutus-values*.yaml`).
+to be identical (`test/chart/values/v1-external-prometheus*.yaml`).
 
 ## Checking an upgrade
 

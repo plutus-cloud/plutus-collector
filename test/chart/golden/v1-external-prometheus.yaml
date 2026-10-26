@@ -197,13 +197,13 @@ spec:
             - name: OPENCOST_URL
               value: "http://plutus-collector-opencost.plutus-collector.svc.cluster.local:9003"
             - name: CLUSTER_NAME
-              value: "plutus-hetzner-app-box"
+              value: "my-cluster"
             - name: CATCH_UP_DAYS
               value: "3"
             - name: PROMETHEUS_MODE
               value: "external"
             - name: PROMETHEUS_URL
-              value: "https://prometheus-prod-01-eu-west-0.grafana.net/api/prom"
+              value: "https://prometheus.example.com/api/prom"
             - name: PROMETHEUS_USERNAME
               valueFrom:
                 secretKeyRef:
@@ -353,7 +353,7 @@ spec:
             # Every allocation is labelled with this, and the pusher prefers a row's own cluster
             # over clusterName, so it has to be the same value.
             - name: CLUSTER_ID
-              value: "plutus-hetzner-app-box"
+              value: "my-cluster"
             - name: CLOUD_COST_ENABLED
               value: "false"
             - name: CUSTOM_COST_ENABLED
@@ -361,7 +361,7 @@ spec:
             - name: MCP_SERVER_ENABLED
               value: "false"
             - name: PROMETHEUS_SERVER_ENDPOINT
-              value: "https://prometheus-prod-01-eu-west-0.grafana.net/api/prom"
+              value: "https://prometheus.example.com/api/prom"
             - name: PROMETHEUS_QUERY_RESOLUTION_SECONDS
               value: "300"
             - name: DB_BASIC_AUTH_USERNAME
@@ -424,13 +424,13 @@ spec:
         - name: OPENCOST_URL
           value: "http://plutus-collector-opencost.plutus-collector.svc.cluster.local:9003"
         - name: CLUSTER_NAME
-          value: "plutus-hetzner-app-box"
+          value: "my-cluster"
         - name: CATCH_UP_DAYS
           value: "3"
         - name: PROMETHEUS_MODE
           value: "external"
         - name: PROMETHEUS_URL
-          value: "https://prometheus-prod-01-eu-west-0.grafana.net/api/prom"
+          value: "https://prometheus.example.com/api/prom"
         - name: PROMETHEUS_USERNAME
           valueFrom:
             secretKeyRef:

@@ -7,8 +7,8 @@ import (
 )
 
 // Row is one (model, provider, virtual key, team) tuple's spend and token counts for one UTC
-// day, matching plutus-backend's routes/litellm-cost-ingest.js field-for-field. Do not rename a
-// field without coordinating there.
+// day, matching Plutus's litellm-cost ingest route field-for-field. Do not rename a
+// field.
 //
 // The tuple is the unit because the backend writes each row into four grains — model, upstream
 // provider, virtual key, team — and every grain has to sum to the same daily total. See this

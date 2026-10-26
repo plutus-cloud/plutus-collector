@@ -1,5 +1,4 @@
-// Command plutus-collector is a long-lived process (deliberately not a Kubernetes CronJob — see
-// the design doc's §2, "The agent") that periodically queries an in-cluster OpenCost instance's
+// Command plutus-collector is a long-lived process (deliberately not a Kubernetes CronJob) that periodically queries an in-cluster OpenCost instance's
 // /allocation API and pushes the result to Plutus's kubernetes-cost ingest endpoint.
 //
 // Run with --once it does a single pass and exits, which is what manual backfills and the

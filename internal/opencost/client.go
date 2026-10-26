@@ -49,7 +49,7 @@ import (
 
 // Row is OpenCost's allocation output translated into the shape internal/ingest maps from. One
 // Row per (cluster, namespace, controllerKind, controllerName, pod, container) — the same
-// per-container granularity the CSV exporter produces (docs/kubernetes-cost-allocation.md §9.5).
+// per-container granularity the CSV exporter produces.
 type Row struct {
 	Namespace      string
 	Cluster        string
@@ -64,7 +64,7 @@ type Row struct {
 	PVCost      float64
 	GPUCost     float64
 	// TotalCost as OpenCost reports it. Can be zero/unset on some rows the same way the CSV
-	// exporter's TotalCost cell can be blank (docs/kubernetes-cost-allocation.md §9.7) — callers
+	// exporter's TotalCost cell can be blank — callers
 	// should prefer TotalCostOrSum() rather than this field directly.
 	TotalCost    float64
 	HasTotalCost bool
@@ -128,8 +128,7 @@ type jsonResponse struct {
 
 // ComputeAllocation queries /allocation for the single [start, end) window and returns
 // one Row per allocation the API returns. start/end should be UTC day boundaries — see
-// internal/pusher, which always requests "yesterday" (OpenCost's own aggregation is daily; see
-// docs/kubernetes-cost-allocation.md §7).
+// internal/pusher, which always requests "yesterday" (OpenCost's own aggregation is daily).
 func (c *Client) ComputeAllocation(ctx context.Context, start, end time.Time) ([]Row, error) {
 	u := fmt.Sprintf(
 		"%s/allocation?window=%s,%s&aggregate=namespace,controllerKind,controller,pod,container&accumulate=false",

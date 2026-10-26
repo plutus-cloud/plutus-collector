@@ -8,8 +8,8 @@
 // reachable from the LiteLLM binary, which is the point — the two contracts can move
 // independently.
 //
-// This shape is a fixed contract with plutus-backend's routes/kubernetes-cost-ingest.js — do
-// not rename fields or change types without coordinating there. The sentinel values below
+// This shape is a fixed contract with Plutus's kubernetes-cost ingest route — do
+// not rename fields or change types. The sentinel values below
 // (`__unallocated__`, `__unknown_cluster__`) mirror that route's row-mapping conventions
 // exactly.
 package k8scost

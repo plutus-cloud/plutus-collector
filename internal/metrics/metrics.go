@@ -1,6 +1,5 @@
 // Package metrics exposes a tiny hand-rolled Prometheus text-format /metrics endpoint plus the
-// /healthz and /readyz probes, so Alloy (already scraping everything else in the cluster per the
-// parent repo's docs/monitoring.md) can pick this agent up the same way. No client library
+// /healthz and /readyz probes, so Alloy (already scraping everything else in the cluster) can pick this agent up the same way. No client library
 // dependency — the metric set is small and fixed, and it keeps the binary dependency-free beyond
 // the Go standard library.
 package metrics
@@ -45,7 +44,7 @@ func NewState() *State {
 
 // RecordSuccess is called after a batch was accepted (2xx), even if some rows were rejected —
 // rejection detail is logged separately by the pusher; the metric here is about the push
-// mechanism succeeding, matching "last push success/failure" from the design doc.
+// mechanism succeeding, matching "last push success/failure".
 func (s *State) RecordSuccess(rows int, duration time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

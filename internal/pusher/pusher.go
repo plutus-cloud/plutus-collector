@@ -1,6 +1,6 @@
 // Package pusher runs a collector's main loop: on each tick, ask the configured Source for the
 // recent closed UTC days' data, and push it with in-process retry/backoff. A failed push must
-// never crash the process (design doc §2) — it's logged, counted in /metrics, and retried on the
+// never crash the process — it's logged, counted in /metrics, and retried on the
 // next tick.
 //
 // Source-agnostic by construction. It was OpenCost-specific until the LiteLLM collector was
@@ -448,7 +448,7 @@ func (p *Pusher) processWindow(ctx context.Context, w Window, newest, force bool
 	}
 
 	// A 2xx with rejected rows is a partial failure the customer needs to see — this is their
-	// only visibility into it (design doc §1), so every error string is logged individually
+	// only visibility into it, so every error string is logged individually
 	// rather than just the count.
 	if resp.Rejected > 0 {
 		p.Logger.Warn("some rows were rejected by Plutus", "rejected", resp.Rejected, "accepted", resp.Accepted)
@@ -526,8 +526,8 @@ func (p *Pusher) consecutiveEmpty(newest time.Time) int {
 
 // PreviousUTCDayWindow returns [start, end) for "yesterday" in UTC — the newest window every
 // source in this repo is queried over. The UTC day is the unit because it is the only granularity
-// that means the same thing across the systems Plutus reads (see plutus's CLAUDE.md on the cost
-// horizon and redistribution), and because both OpenCost and LiteLLM aggregate daily anyway.
+// that means the same thing across the systems Plutus reads, and because both OpenCost and LiteLLM
+// aggregate daily anyway.
 func PreviousUTCDayWindow(now time.Time) (start, end time.Time, dateKey string) {
 	today := time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day(), 0, 0, 0, 0, time.UTC)
 	start = today.AddDate(0, 0, -1)
