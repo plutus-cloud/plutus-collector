@@ -60,8 +60,8 @@ for f in "$values"/*.yaml; do
 done
 
 # The v1 shim: a v1 values file must render exactly what its v2 translation renders.
-if ! diff -u <(render "$values/v1-plutus-values.v2-equivalent.yaml") <(render "$values/v1-plutus-values.yaml") >"$tmp/shim.diff"; then
-  fail "v1-plutus-values: the shim output differs from the v2-native equivalent"
+if ! diff -u <(render "$values/v1-external-prometheus.v2-equivalent.yaml") <(render "$values/v1-external-prometheus.yaml") >"$tmp/shim.diff"; then
+  fail "v1-external-prometheus: the shim output differs from the v2-native equivalent"
   head -40 "$tmp/shim.diff" >&2
 fi
 

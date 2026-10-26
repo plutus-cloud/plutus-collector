@@ -1,5 +1,5 @@
 // Package config loads a collector's configuration entirely from environment variables
-// (12-factor — see plutus-collector's README.md and the design doc's §2 "The agent"). There is
+// (12-factor — see the README). There is
 // deliberately no config file: this component is small enough that env vars plus a Helm
 // values.yaml -> env mapping is the whole story.
 //
@@ -25,18 +25,17 @@ import (
 
 // Common is the configuration every collector in this repo needs, whatever it reads.
 type Common struct {
-	// PlutusIngestURL is where the batch is POSTed. Defaults to the live Hetzner deployment's
-	// public ingest route (see docs/kubernetes-cost-allocation.md and the design doc's §1).
+	// PlutusIngestURL is where the batch is POSTed. Defaults to Plutus's hosted
+	// ingest route.
 	PlutusIngestURL string
 
 	// PlutusAPIKey authenticates the push (Authorization: Bearer <key>), minted per-account via
-	// POST /api/accounts/:accountId/cost-sources/kubernetes/api-key (design doc §1). Required,
+	// POST /api/accounts/:accountId/cost-sources/kubernetes/api-key. Required,
 	// no default — there is no safe default for a credential.
 	PlutusAPIKey string
 
 	// PushInterval is how often the agent queries its source and pushes a batch. Defaults to
-	// 24h, matching the daily aggregation cadence of both sources this repo reads (see design
-	// doc §2 and docs/kubernetes-cost-allocation.md §7) — pushing more often than the source
+	// 24h, matching the daily aggregation cadence of both sources this repo reads — pushing more often than the source
 	// re-aggregates buys nothing.
 	PushInterval time.Duration
 
@@ -51,8 +50,8 @@ type Common struct {
 	HTTPTimeout time.Duration
 
 	// MaxRetries and RetryBaseDelay govern in-process retry/backoff on a failed push (see
-	// internal/pusher). A network blip must not crash the whole process — see design doc §2's
-	// CronJob-vs-Deployment discussion.
+	// internal/pusher). A network blip must not crash the whole process — the process
+	// retries and keeps running.
 	MaxRetries     int
 	RetryBaseDelay time.Duration
 }
@@ -73,9 +72,8 @@ type OpenCostConfig struct {
 	ClusterName string
 
 	// Currency is the ISO 4217 currency OpenCost was configured to price in. OpenCost does not
-	// emit a currency field anywhere in its allocation output (see
-	// docs/kubernetes-cost-allocation.md §9.6), so this can never be defaulted to "USD" — that
-	// is the exact defect docs/multi-currency.md exists to prevent. Required, no default.
+	// emit a currency field anywhere in its allocation output so this
+	// can never be defaulted to "USD". Required, no default.
 	//
 	// There is deliberately no counterpart in LiteLLMConfig: that source prices from a
 	// USD-denominated map and the backend asserts the currency itself, so asking an operator for
@@ -311,7 +309,7 @@ func LoadOpenCost(getenv func(string) string) (*OpenCostConfig, error) {
 		errs = append(errs, "CLUSTER_NAME is required (no default)")
 	}
 	if cfg.Currency == "" {
-		errs = append(errs, "CURRENCY is required (no default — OpenCost does not report its own currency, see docs/multi-currency.md)")
+		errs = append(errs, "CURRENCY is required (no default — OpenCost does not report its own currency)")
 	}
 	if u, err := url.Parse(cfg.OpenCostURL); err == nil && u.Host != "" && rejectUserinfo("OPENCOST_URL", u, "", &errs) {
 	} else if err != nil || u.Host == "" {

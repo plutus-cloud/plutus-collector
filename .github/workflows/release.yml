@@ -1,19 +1,15 @@
 name: Build & publish
 
-# Moved out of the plutus monorepo's build-images.yml when this component split into its own
-# repo (see README's "Why a separate repo" — the short version: a customer installs this into
-# their own cluster and needs to be able to read the source, which a private monorepo made
-# impossible even though the built artifacts were already public).
+# A customer installs this into their own cluster and needs to be able to read the source (see
+# README's "Why a separate repo").
 #
-# Unlike plutus-backend/frontend/migrate in the main repo, this image AND chart are
-# CUSTOMER-DISTRIBUTABLE: any customer's own cluster needs to `helm install` this with zero
+# This image AND chart are CUSTOMER-DISTRIBUTABLE: any customer's own cluster needs to `helm install` this with zero
 # Plutus credentials. Both must be manually marked PUBLIC in GHCR's package settings after their
 # first publish — `docker/build-push-action` and `helm push` don't set that themselves, and
 # there's no API for it wired into this workflow.
 #
 # workflow_dispatch added for manual republishing (e.g. after a registry hiccup, or to rebuild the
-# images on a patched base without cutting a release) without cutting a new release, same as the
-# monorepo's build-images.yml. Dispatched against a branch it republishes the IMAGES only — the
+# images on a patched base without cutting a release) without cutting a new release. Dispatched against a branch it republishes the IMAGES only — the
 # chart steps are tag-gated, see the note on them.
 #
 # ─── TAG-TRIGGERED, AND THE WORKFLOW CREATES THE RELEASE ────────────────────
@@ -200,8 +196,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: cosign sign --yes "ghcr.io/plutus-cloud/charts/plutus-collector:$RELEASE_TAG"
 
-  # A CycloneDX SBOM for the image, attached to the GitHub Release — same reasoning as the
-  # monorepo's build-images.yml: this component runs inside a customer's own infrastructure, so
+  # A CycloneDX SBOM for the image, attached to the GitHub Release: this component runs inside a customer's own infrastructure, so
   # its dependency inventory matters at least as much as anything Plutus runs for itself.
   # Separate job so no single job's token can both push images and rewrite the repo. Across all
   # three: `create-release` holds `contents: write` and no packages scope, `build` holds

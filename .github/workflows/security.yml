@@ -1,25 +1,22 @@
 name: Security Scan
 
-# Same shape as plutus-cloud/plutus's own security.yml, scaled to what this repo actually is:
-# a Go module, one Dockerfile, one Helm chart — no npm, no Terraform. Five scanners in ONE job
-# on every PR, for the same per-job-billing reason the main repo's copy documents.
+# Scaled to what this repo actually is: a Go module, one Dockerfile, one Helm chart — no npm, no Terraform. Five scanners in ONE job
+# on every PR, because Actions minutes are billed per job.
 #
 # ── Why CLIs and not the official Actions ───────────────────────────────────────────────
 # This repo is private today (see README's "Why a separate repo" / "Currently private, not yet
 # public"), which makes GitHub Advanced Security — CodeQL, GitHub secret scanning,
 # dependency-review-action — unavailable, and `github/codeql-action/upload-sarif` 403s without
-# it. Nothing here uploads SARIF; every tool runs as a plain CLI instead, same as the main repo.
+# it. Nothing here uploads SARIF; every tool runs as a plain CLI instead.
 # Worth revisiting once this repo goes public (GHAS is free on public repos), but there's no
 # reason to build two versions of this file for a state change that hasn't happened yet — this
 # one keeps working unchanged either way.
 #
 # ── Why gosec instead of semgrep ────────────────────────────────────────────────────────
-# The main repo's semgrep step runs JavaScript/TypeScript/React registry packs plus its own
-# `.semgrep/` tenant-isolation rules — none of that applies to a Go codebase with no tenant
-# model. gosec is the standard Go SAST scanner and plays the same role (hardcoded credentials,
+# semgrep's JavaScript/TypeScript/React registry packs don't apply to a Go codebase. gosec is the standard Go SAST scanner and plays the same role (hardcoded credentials,
 # unsafe patterns, weak crypto) for what's actually here.
 #
-# ── Blocking policy — same as the main repo ────────────────────────────────────────────
+# ── Blocking policy ─────────────────────────────────────────────────────────────────────
 # gitleaks blocks. Everything else is continue-on-error + a ::warning, since this is a rollout
 # against an existing (if young) codebase — warn first, then tighten once the backlog (if any)
 # is triaged. Delete a step's `continue-on-error: true` line to make it blocking; each step
@@ -73,7 +70,7 @@ jobs:
           trivy --version
 
       # zizmor is a Python tool, gosec a Go one — pip and `go install` respectively, no shared
-      # venv needed the way the main repo's three Python tools share one.
+      # venv needed.
       - name: Install zizmor
         run: |
           set -euo pipefail
@@ -94,7 +91,7 @@ jobs:
           gosec -version 2>&1 || true
 
       # ── gitleaks — THE ONLY BLOCKING STEP ───────────────────────────────────────────────
-      # Same range-scan logic as the main repo's copy — base..head on a PR, full history on
+      # Range scan — base..head on a PR, full history on
       # workflow_dispatch or when the base/head commits aren't reachable (force-push/rebase).
       - name: gitleaks (secret scanning)
         env:
@@ -169,7 +166,7 @@ jobs:
           fi
           exit "$status"
 
-      # ── gosec — Go SAST, standing in for the main repo's semgrep JS/TS packs ────────────
+      # ── gosec — Go SAST, Go SAST ──────────────────────────────────────────────────────
       - name: gosec (Go SAST)
         continue-on-error: true # delete this line to make gosec blocking
         run: |

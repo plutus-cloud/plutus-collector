@@ -50,8 +50,7 @@ func TestMapRows_FallsBackToComponentSumWhenTotalCostMissing(t *testing.T) {
 			Cluster:   "prod-1",
 			CPUCost:   0.3,
 			RAMCost:   0.6,
-			// TotalCost intentionally zero/unset — mirrors OpenCost's own blank-TotalCost rows,
-			// see docs/kubernetes-cost-allocation.md §9.7.
+			// TotalCost intentionally zero/unset — mirrors OpenCost's own blank-TotalCost rows.
 		},
 	}
 	out := MapRows("2026-08-10", "default-cluster", rows)

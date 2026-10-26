@@ -1,5 +1,5 @@
 # The same install written with v2 keys.
-clusterName: "plutus-hetzner-app-box"
+clusterName: "my-cluster"
 currency: "USD"
 global:
   imagePullSecrets:
@@ -25,7 +25,7 @@ opencost:
 prometheus:
   mode: external
   external:
-    url: "https://prometheus-prod-01-eu-west-0.grafana.net/api/prom"
+    url: "https://prometheus.example.com/api/prom"
     auth:
       type: basic
       existingSecret: plutus-collector-opencost-prometheus

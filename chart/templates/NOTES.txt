@@ -35,7 +35,7 @@ be used to run commands in any pod on the node.
 {{- if and $c.opencost.enabled (eq $c.opencost.pricing.provider "auto") }}
 
 Pricing: OpenCost uses your cloud provider's price list when it can identify the provider. On a
-cluster it cannot identify (on-prem, Hetzner, ...) it falls back to built-in default rates and the
+cluster it cannot identify (on-premises or bare metal) it falls back to built-in default rates and the
 preflight warns about it; set opencost.pricing.provider=custom and the rates to price your own.
 {{- end }}
 {{- range $c.deprecations }}

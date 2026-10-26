@@ -4,9 +4,9 @@ existingSecret: plutus-collector-key
 prometheus:
   mode: external
   external:
-    url: https://prometheus-prod-01-eu-west-0.grafana.net/api/prom
+    url: https://prometheus-prod-00-example.grafana.net/api/prom
     auth:
       type: basic
-      existingSecret: grafana-cloud-read
+      existingSecret: grafana-cloud-credentials
       usernameKey: username
       passwordKey: token

@@ -1,8 +1,6 @@
 name: Test
 
-# This repo had no PR-time checks at all until it split out of the plutus monorepo (where
-# `go build`/`go test`/`helm lint` were run by hand, not gated in CI) — closing that gap here
-# rather than carrying it forward into the new repo.
+# PR-time gate: Go build and tests, helm lint, rendered-chart goldens and kubeconform.
 
 on:
   pull_request:

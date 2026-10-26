@@ -1,8 +1,7 @@
 # Multi-stage build: a static Go binary in a distroless final image, matching every other
-# in-cluster component this agent runs alongside (Alloy, OpenCost — see the design doc's §2 and
-# CLAUDE.md's k3s/security-scanning notes). No shell, no package manager, minimal CVE surface —
-# this is the first Plutus-authored code running inside a customer's cluster, so the image
-# itself is part of the trust story.
+# in-cluster component this agent runs alongside (Alloy, OpenCost). No shell, no package manager,
+# minimal CVE surface — this is the first Plutus-authored code running inside a customer's
+# cluster, so the image itself is part of the trust story.
 
 # Pinned (not a floating `1.26-alpine` tag) so Dependabot's `docker` ecosystem has something to
 # actually bump. Was 1.22.12 until nightly.yml's first real run caught 15 stdlib CVEs baked into
