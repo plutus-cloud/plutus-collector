@@ -4,13 +4,9 @@ name: Security Scan
 # on every PR, because Actions minutes are billed per job.
 #
 # ── Why CLIs and not the official Actions ───────────────────────────────────────────────
-# This repo is private today (see README's "Why a separate repo" / "Currently private, not yet
-# public"), which makes GitHub Advanced Security — CodeQL, GitHub secret scanning,
-# dependency-review-action — unavailable, and `github/codeql-action/upload-sarif` 403s without
-# it. Nothing here uploads SARIF; every tool runs as a plain CLI instead.
-# Worth revisiting once this repo goes public (GHAS is free on public repos), but there's no
-# reason to build two versions of this file for a state change that hasn't happened yet — this
-# one keeps working unchanged either way.
+# GitHub Advanced Security features such as CodeQL and dependency-review-action are not used,
+# and `github/codeql-action/upload-sarif` is not available without it. Nothing here uploads SARIF;
+# every tool runs as a plain CLI instead.
 #
 # ── Why gosec instead of semgrep ────────────────────────────────────────────────────────
 # semgrep's JavaScript/TypeScript/React registry packs don't apply to a Go codebase. gosec is the standard Go SAST scanner and plays the same role (hardcoded credentials,
