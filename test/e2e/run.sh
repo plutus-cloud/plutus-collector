@@ -8,7 +8,7 @@
 #
 #   KEEP=1                keep the cluster afterwards
 #   FOOTPRINT_PODS=100    pause pods to schedule for the footprint measurement (0 skips it)
-#   TARGETPLATFORM        passed to docker build, for building the agent for the node's arch
+#   TARGETARCH            architecture to build the agent for (default: the Docker host's, which is the kind node's)
 #
 # Nothing here talks to Plutus: the ingest URL is a mock inside the cluster.
 set -euo pipefail
@@ -61,7 +61,17 @@ pusher_pod() {
 
 # ---------------------------------------------------------------------------------------------
 log "building images"
-docker build --build-arg VERSION=e2e -t plutus-collector:e2e .
+# The Dockerfile defaults TARGETARCH to amd64 for plain `docker build`, so on an arm64 host the
+# agent would be an amd64 binary and the pod would fail with an exec format error. Build for the
+# host's architecture, which is also the kind node's.
+if [ -z "${TARGETARCH:-}" ]; then
+  case "$(uname -m)" in
+    x86_64|amd64) TARGETARCH=amd64 ;;
+    aarch64|arm64) TARGETARCH=arm64 ;;
+    *) echo "unsupported architecture $(uname -m); set TARGETARCH" >&2; exit 1 ;;
+  esac
+fi
+docker build --build-arg VERSION=e2e --build-arg TARGETOS=linux --build-arg "TARGETARCH=$TARGETARCH" -t plutus-collector:e2e .
 docker build -f test/e2e/mockingest/Dockerfile -t plutus-mock-ingest:e2e .
 
 log "creating the kind cluster"
