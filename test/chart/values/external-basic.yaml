@@ -1,0 +1,10 @@
+clusterName: prod-us-east-1
+currency: USD
+apiKey: test-api-key
+prometheus:
+  mode: external
+  external:
+    url: http://prometheus-server.monitoring.svc.cluster.local:80
+    auth:
+      type: basic
+      existingSecret: prom-creds

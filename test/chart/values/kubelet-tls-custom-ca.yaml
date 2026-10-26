@@ -1,0 +1,10 @@
+# Kubelet certificates are signed by a CA of your own, supplied in a Secret.
+clusterName: prod-us-east-1
+currency: USD
+apiKey: test-api-key
+prometheus:
+  bundled:
+    kubeletTLS:
+      insecureSkipVerify: false
+      caSecret: kubelet-ca
+      caKey: ca.pem

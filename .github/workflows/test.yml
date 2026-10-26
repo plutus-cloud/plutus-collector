@@ -1,0 +1,54 @@
+name: Test
+
+# PR-time gate: Go build and tests, helm lint, rendered-chart goldens and kubeconform.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Neither job needs to write anything back to the repo or push a package — build/vet/test and
+# helm lint only ever read the checked-out source — so GITHUB_TOKEN is scoped to read-only,
+# same explicit-scoping convention as release.yml/security.yml/nightly.yml.
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: go build / vet / test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.26"
+          check-latest: false
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  chart:
+    name: chart tests (helm lint, goldens, kubeconform)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: v4.2.2
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.26"
+          check-latest: false
+      # Pinned by version; go install verifies the module against the Go checksum database.
+      - name: Install kubeconform
+        run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0
+      # Renders every values file under test/chart/values, compares with the committed goldens,
+      # checks the v1 translation shim and the install-time failures, and runs kubeconform
+      # -strict on each render. The chart has no dependencies to fetch.
+      - run: |
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          helm lint chart --set clusterName=ci-test --set currency=USD --set apiKey=ci-test-key
+          test/chart/run.sh

@@ -1,0 +1,40 @@
+name: Public text
+
+# Everything in this repository is public: pull request titles and bodies, commit messages, code,
+# comments and CI logs. This check rejects text that should not be published. Patterns live in the
+# PUBLIC_TEXT_DENYLIST repository secret (one extended regex per line) so the list is not itself
+# published, plus a few built-in attribution patterns in scripts/check-public-text.sh.
+#
+# Pull requests from forks do not receive repository secrets; for those the job runs the built-in
+# patterns only and says so in a notice. It uses `pull_request`, not `pull_request_target`, so no
+# code from the pull request runs with secrets it should not have.
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: public-text-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Public text
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check title, body, commits and added lines
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PUBLIC_TEXT_DENYLIST: ${{ secrets.PUBLIC_TEXT_DENYLIST }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: scripts/check-public-text.sh "$BASE_SHA" "$HEAD_SHA"

@@ -1,0 +1,12 @@
+clusterName: prod-us-east-1
+currency: USD
+existingSecret: plutus-collector-key
+prometheus:
+  mode: external
+  external:
+    url: https://prometheus-prod-00-example.grafana.net/api/prom
+    auth:
+      type: basic
+      existingSecret: grafana-cloud-credentials
+      usernameKey: username
+      passwordKey: token

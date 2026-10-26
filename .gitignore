@@ -1,0 +1,7 @@
+# Local build output.
+/plutus-collector
+/dist/
+
+# Local assistant configuration.
+CLAUDE.local.md
+.claude/

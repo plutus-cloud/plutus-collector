@@ -1,0 +1,25 @@
+{{/*
+Optional ServiceMonitor for a prometheus-operator that scrapes OpenCost's metrics into your own
+Prometheus (prometheus.mode=external). Rendered only when asked for and only when the cluster has
+the CRD, so a cluster without the operator never sees a resource of an unknown kind.
+*/}}
+{{- $c := include "plutus-collector.cfg" . | fromYaml -}}
+{{- if and $c.opencost.enabled (eq $c.prometheus.mode "external") $c.prometheus.external.serviceMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/ServiceMonitor") }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "plutus-collector.fullname" . }}-opencost
+  labels:
+    {{- include "plutus-collector.componentLabels" (dict "root" . "component" "opencost") | nindent 4 }}
+    {{- with $c.prometheus.external.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "plutus-collector.componentSelectorLabels" (dict "root" . "component" "opencost") | nindent 6 }}
+  endpoints:
+    - port: http
+      interval: 60s
+      honorLabels: true
+{{- end }}

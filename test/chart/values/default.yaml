@@ -1,0 +1,4 @@
+# The documented minimum: the three required values and nothing else.
+clusterName: prod-us-east-1
+currency: USD
+apiKey: test-api-key

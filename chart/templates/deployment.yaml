@@ -1,0 +1,130 @@
+{{- $c := include "plutus-collector.cfg" . | fromYaml -}}
+{{- $ctx := dict "root" . "cfg" $c -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "plutus-collector.fullname" . }}
+  labels:
+    {{- include "plutus-collector.labels" . | nindent 4 }}
+spec:
+  # Fixed at 1 replica: a second would push the same batch twice. The backend replaces a day's
+  # rows per push, so that is harmless, but pointless.
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "plutus-collector.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "plutus-collector.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with $c.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+        - name: pusher
+          image: {{ include "plutus-collector.image" (dict "img" $c.pusher.image "registry" $c.global.imageRegistry "defaultTag" .Chart.AppVersion) | quote }}
+          imagePullPolicy: {{ $c.pusher.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.metricsPort }}
+              protocol: TCP
+          env:
+            {{- include "plutus-collector.preflightEnv" $ctx | nindent 12 }}
+            - name: PREFLIGHT_ENABLED
+              value: {{ $c.preflight.enabled | quote }}
+            - name: PREFLIGHT_BLOCK_ON
+              value: {{ join "," $c.preflight.blockPushOn | default "none" | quote }}
+            - name: PLUTUS_INGEST_URL
+              value: {{ $c.plutusIngestUrl | quote }}
+            - name: CURRENCY
+              value: {{ $c.currency | quote }}
+            {{- if $c.pusher.ingestCA.existingSecret }}
+            - name: PLUTUS_INGEST_CA_FILE
+              value: {{ printf "/etc/plutus-ingest-ca/%s" $c.pusher.ingestCA.key | quote }}
+            {{- end }}
+            {{- if $c.pusher.pushIntervalMinutes }}
+            # Deprecated: a fixed interval counted from process start instead of the daily
+            # schedule.
+            - name: PUSH_INTERVAL_MINUTES
+              value: {{ $c.pusher.pushIntervalMinutes | quote }}
+            {{- end }}
+            - name: PUSH_SCHEDULE_UTC
+              value: {{ $c.pusher.schedule.utcTime | quote }}
+            - name: PUSH_JITTER_MINUTES
+              value: {{ $c.pusher.schedule.jitterMinutes | quote }}
+            - name: EMPTY_RESULT
+              value: {{ $c.pusher.emptyResult | quote }}
+            - name: METRICS_ADDR
+              value: {{ printf ":%d" (int .Values.metricsPort) | quote }}
+            - name: PLUTUS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "plutus-collector.secretName" . }}
+                  key: {{ include "plutus-collector.secretKey" . }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          # Readiness reports the data, liveness only the process: /readyz answers 503 while the
+          # last window came back empty or a preflight check is failing, so `kubectl get pods`
+          # shows 0/1 for a data problem without the pod being restarted for it.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          resources:
+            {{- toYaml $c.pusher.resources | nindent 12 }}
+          {{- if or (include "plutus-collector.mtlsMount" $c) $c.pusher.ingestCA.existingSecret }}
+          volumeMounts:
+            {{- with include "plutus-collector.mtlsMount" $c }}
+            {{- . | trim | nindent 12 }}
+            {{- end }}
+            {{- if $c.pusher.ingestCA.existingSecret }}
+            - name: ingest-ca
+              mountPath: /etc/plutus-ingest-ca
+              readOnly: true
+            {{- end }}
+          {{- end }}
+      {{- if or (include "plutus-collector.mtlsVolume" $c) $c.pusher.ingestCA.existingSecret }}
+      volumes:
+        {{- with include "plutus-collector.mtlsVolume" $c }}
+        {{- . | trim | nindent 8 }}
+        {{- end }}
+        {{- if $c.pusher.ingestCA.existingSecret }}
+        - name: ingest-ca
+          secret:
+            secretName: {{ $c.pusher.ingestCA.existingSecret }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

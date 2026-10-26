@@ -1,0 +1,24 @@
+{{/*
+A plain ClusterIP Service exposing /metrics (and /healthz), not a prometheus-operator
+ServiceMonitor — we can't assume the customer runs prometheus-operator's CRDs, so a plain
+Service is the safer default. Prometheus/Alloy users can scrape this Service directly (see
+README's "Scraping /metrics" for a ServiceMonitor snippet to add themselves if they do run the
+operator).
+*/}}
+{{- if .Values.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "plutus-collector.fullname" . }}
+  labels:
+    {{- include "plutus-collector.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: metrics
+      port: {{ .Values.service.port }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "plutus-collector.selectorLabels" . | nindent 4 }}
+{{- end }}
